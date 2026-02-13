@@ -20,7 +20,6 @@ jobs:
 
       - name: Build web
         run: |
-          cd ponto
           flutter pub get
           flutter build web --release --base-href="/${{ github.event.repository.name }}/"
 
@@ -28,5 +27,5 @@ jobs:
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ponto/build/web
+          publish_dir: build/web
           destination_dir: .
