@@ -1,0 +1,10 @@
+Crie um aplicativo em flutter de forma mais simples possivel que irá:
+
+ter um botão de ENTRAR
+ao clicar no botão de ENTRAR, ele deve
+ * Enviar a data e hora para uma planilha do google
+ * ALterar o botão de ENTRAR para SAIR
+ao clicar no botão de SAIR, ele deve
+ * Enviar a data e hora para uma planilha do google
+ * ALterar o botão de SAIR para ENTRAR
+ 
