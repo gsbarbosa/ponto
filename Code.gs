@@ -1,7 +1,7 @@
 /**
  * Script do Google Apps Script para receber registros de ponto.
  * Cada profissional tem sua própria aba; cada linha é um dia.
- * Colunas: Data | Entrada | Saída | Observação
+ * Colunas: Data | Entrada | Saída
  *
  * Como configurar:
  * 1. Crie uma planilha no Google Sheets
@@ -10,6 +10,26 @@
  * 4. Implantar > Nova implantação > Aplicativo da Web
  * 5. Use a URL gerada no app Flutter
  */
+
+// Cores: Data | Entrada | Saída
+const CORES_COLUNAS = ['#f9cb9c', '#a4c2f4', '#d5a6bd'];
+const LARGURA_COLUNA = 180;
+const NUM_COLUNAS = 3;
+
+function formatarPlanilha(sheet) {
+  const lastRow = sheet.getLastRow();
+  const numRows = Math.max(lastRow + 1, 100);
+  const range = sheet.getRange(1, 1, numRows, 3);
+  const backgrounds = [];
+  for (let r = 0; r < numRows; r++) {
+    backgrounds.push([CORES_COLUNAS[0], CORES_COLUNAS[1], CORES_COLUNAS[2]]);
+  }
+  range.setBackgrounds(backgrounds);
+  range.setHorizontalAlignment(SpreadsheetApp.HorizontalAlignment.LEFT);
+  sheet.getRange(1, 1, 1, 3).setFontWeight(null);
+  sheet.setColumnWidths(1, 3, LARGURA_COLUNA);
+  SpreadsheetApp.flush();
+}
 
 function doGet() {
   return ContentService
@@ -36,8 +56,7 @@ function doPost(e) {
 
     if (!sheet) {
       sheet = ss.insertSheet(profissional);
-      sheet.getRange(1, 1, 1, 4).setValues([['Data', 'Entrada', 'Saída', 'Observação']]);
-      sheet.getRange(1, 1, 1, 4).setFontWeight('bold');
+      sheet.getRange(1, 1, 1, NUM_COLUNAS).setValues([['Data', 'Entrada', 'Saída']]);
     }
 
     const dataCol = 1;
@@ -47,8 +66,8 @@ function doPost(e) {
     const ultimaLinha = sheet.getLastRow();
     let linhaData = -1;
 
-    if (ultimaLinha >= 1) {
-      const colData = sheet.getRange(2, dataCol, ultimaLinha + 1, dataCol).getValues();
+    if (ultimaLinha >= 2) {
+      const colData = sheet.getRange(2, dataCol, ultimaLinha, dataCol).getValues();
       for (let i = 0; i < colData.length; i++) {
         const val = colData[i][0];
         const celulaStr = val ? (typeof val === 'object' && val.getTime ? Utilities.formatDate(val, Session.getScriptTimeZone(), 'dd/MM/yyyy') : String(val)) : '';
@@ -60,7 +79,7 @@ function doPost(e) {
     }
 
     if (linhaData < 0) {
-      linhaData = (ultimaLinha || 1) + 1;
+      linhaData = ultimaLinha + 1;
       sheet.getRange(linhaData, dataCol).setValue(data);
     }
 
@@ -69,6 +88,11 @@ function doPost(e) {
     } else if (tipo === 'SAIR') {
       sheet.getRange(linhaData, saidaCol).setValue(hora);
     }
+
+    sheet.getRange(linhaData, 1, linhaData, NUM_COLUNAS)
+      .setHorizontalAlignment(SpreadsheetApp.HorizontalAlignment.LEFT);
+
+    formatarPlanilha(sheet);
 
     return ContentService
       .createTextOutput(JSON.stringify({ ok: true }))

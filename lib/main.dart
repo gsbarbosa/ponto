@@ -1,8 +1,18 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() => runApp(const PontoApp());
+
+// Cores do tema escuro (conforme layout)
+const _kBackground = Color(0xFF1e1e1e);
+const _kGrayBorder = Color(0xFF9e9e9e);
+const _kGrayText = Color(0xFFb0b0b0);
+const _kButtonFill = Color(0xFF2d2d2d);
+const _kSairBlue = Color(0xFF4285F4);
+const _kSairBlueLight = Color(0xFF60B0FF);
 
 class PontoApp extends StatelessWidget {
   const PontoApp({super.key});
@@ -12,7 +22,13 @@ class PontoApp extends StatelessWidget {
     return MaterialApp(
       title: 'Ponto',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.green),
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: _kBackground,
+        colorScheme: ColorScheme.dark(
+          surface: _kBackground,
+          primary: _kSairBlue,
+          onSurface: _kGrayText,
+        ),
         useMaterial3: true,
       ),
       home: const AppShell(),
@@ -98,45 +114,93 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Ponto - Login'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-      ),
-      body: Center(
-        child: SingleChildScrollView(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
+      backgroundColor: _kBackground,
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(
-                  controller: _nomeController,
-                  decoration: const InputDecoration(
-                    labelText: 'Nome',
-                    hintText: 'Seu nome',
-                    border: OutlineInputBorder(),
+                // Campos Nome e Matrícula centralizados
+                SizedBox(
+                  width: 280,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextField(
+                        controller: _nomeController,
+                        style: GoogleFonts.dmSans(
+                          fontWeight: FontWeight.w600,
+                          color: _kGrayText,
+                          fontSize: 16,
+                        ),
+                        decoration: InputDecoration(
+                          labelText: 'Nome',
+                          labelStyle: GoogleFonts.dmSans(
+                            fontWeight: FontWeight.w600,
+                            color: _kGrayText.withValues(alpha: 0.8),
+                          ),
+                          enabledBorder: UnderlineInputBorder(
+                            borderSide: BorderSide(color: _kGrayBorder.withValues(alpha: 0.5)),
+                          ),
+                          focusedBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: _kGrayBorder),
+                          ),
+                        ),
+                        textCapitalization: TextCapitalization.words,
+                        onSubmitted: (_) => _entrar(),
+                      ),
+                      const SizedBox(height: 24),
+                      TextField(
+                        controller: _codigoController,
+                        style: GoogleFonts.dmSans(
+                          fontWeight: FontWeight.w600,
+                          color: _kGrayText,
+                          fontSize: 16,
+                        ),
+                        decoration: InputDecoration(
+                          labelText: 'Matrícula',
+                          labelStyle: GoogleFonts.dmSans(
+                            fontWeight: FontWeight.w600,
+                            color: _kGrayText.withValues(alpha: 0.8),
+                          ),
+                          enabledBorder: UnderlineInputBorder(
+                            borderSide: BorderSide(color: _kGrayBorder.withValues(alpha: 0.5)),
+                          ),
+                          focusedBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: _kGrayBorder),
+                          ),
+                        ),
+                        keyboardType: TextInputType.number,
+                        onSubmitted: (_) => _entrar(),
+                      ),
+                    ],
                   ),
-                  textCapitalization: TextCapitalization.words,
-                  onSubmitted: (_) => _entrar(),
                 ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _codigoController,
-                  decoration: const InputDecoration(
-                    labelText: 'Código de matrícula',
-                    hintText: 'Sua matrícula',
-                    border: OutlineInputBorder(),
+                const SizedBox(height: 24),
+                // Botão "LOGIN" quadrado, mesma largura dos campos
+                SizedBox(
+                  width: 280,
+                  height: 52,
+                  child: GestureDetector(
+                    onTap: _entrar,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: _kButtonFill,
+                        border: Border.all(color: _kGrayBorder, width: 1.5),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        'LOGIN',
+                        style: GoogleFonts.dmSans(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                          color: _kGrayText,
+                        ),
+                      ),
+                    ),
                   ),
-                  keyboardType: TextInputType.number,
-                  onSubmitted: (_) => _entrar(),
-                ),
-                const SizedBox(height: 32),
-                FilledButton(
-                  onPressed: _entrar,
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(200, 48),
-                  ),
-                  child: const Text('Entrar'),
                 ),
               ],
             ),
@@ -160,10 +224,54 @@ class PontoPage extends StatefulWidget {
 class _PontoPageState extends State<PontoPage> {
   bool _estaDentro = false;
   bool _carregando = false;
+  String? _ultimaData;
+  String? _ultimoTipo;
 
   // Cole aqui a URL do seu Google Apps Script (veja SETUP.md)
   static const _urlScript =
-      'https://script.google.com/macros/s/AKfycbyJ_4bS7Mrb5vbea0MPaPj0wq9L83bOTUNFgbYoe_GLEYAhFLZSoIzg12UfhlM14FbD/exec';
+      'https://script.google.com/macros/s/AKfycbyliKqw-K9PLwfNcVBs1yd-Zo7LU-XAeUgp6ir4sKWIutjkntup2LHECmq2vVrWKUWz/exec';
+
+  String get _prefsKey => 'ponto_${widget.nome}';
+
+  @override
+  void initState() {
+    super.initState();
+    _carregarUltimoPonto();
+  }
+
+  Future<void> _carregarUltimoPonto() async {
+    final prefs = await SharedPreferences.getInstance();
+    final data = prefs.getString('${_prefsKey}_lastDate');
+    final tipo = prefs.getString('${_prefsKey}_lastType');
+    if (mounted) {
+      setState(() {
+        _ultimaData = data;
+        _ultimoTipo = tipo;
+        _estaDentro = tipo == 'ENTRAR';
+      });
+    }
+  }
+
+  Future<void> _salvarUltimoPonto(String data, String tipo) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('${_prefsKey}_lastDate', data);
+    await prefs.setString('${_prefsKey}_lastType', tipo);
+  }
+
+  Future<bool> _enviarParaPlanilha(String tipo, String dataStr, String horaStr) async {
+    final body = jsonEncode({
+      'profissional': widget.nome,
+      'tipo': tipo,
+      'data': dataStr,
+      'hora': horaStr,
+    });
+    final response = await http.post(
+      Uri.parse(_urlScript),
+      headers: {'Content-Type': 'text/plain'},
+      body: body,
+    ).timeout(const Duration(seconds: 10));
+    return response.statusCode >= 200 && response.statusCode < 400;
+  }
 
   Future<void> _registrar(String tipo) async {
     setState(() => _carregando = true);
@@ -174,22 +282,31 @@ class _PontoPageState extends State<PontoPage> {
     final horaStr = '${agora.hour.toString().padLeft(2, '0')}:${agora.minute.toString().padLeft(2, '0')}:${agora.second.toString().padLeft(2, '0')}';
 
     try {
-      // Usa text/plain para evitar preflight CORS no web (Apps Script não envia headers CORS)
-      final body = jsonEncode({
-        'profissional': widget.nome,
-        'tipo': tipo,
-        'data': dataStr,
-        'hora': horaStr,
-      });
-      final response = await http.post(
-        Uri.parse(_urlScript),
-        headers: {'Content-Type': 'text/plain'},
-        body: body,
-      ).timeout(const Duration(seconds: 10));
+      // Se virou o dia e o último foi ENTRAR sem SAIR, registra SAIR "Não informado" no dia anterior
+      if (_ultimaData != null &&
+          _ultimaData != dataStr &&
+          _ultimoTipo == 'ENTRAR') {
+        final okSairAnterior = await _enviarParaPlanilha('SAIR', _ultimaData!, 'Não informado');
+        if (!okSairAnterior) {
+          setState(() => _estaDentro = !_estaDentro);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Erro ao registrar saída do dia anterior.'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+          return;
+        }
+      }
 
-      final sucesso = response.statusCode >= 200 && response.statusCode < 400;
+      final sucesso = await _enviarParaPlanilha(tipo, dataStr, horaStr);
 
       if (sucesso) {
+        await _salvarUltimoPonto(dataStr, tipo);
+        _ultimaData = dataStr;
+        _ultimoTipo = tipo;
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('$tipo registrado às $horaStr')),
@@ -197,11 +314,11 @@ class _PontoPageState extends State<PontoPage> {
         }
       } else {
         setState(() => _estaDentro = !_estaDentro);
-        debugPrint('HTTP ${response.statusCode}: ${response.body}');
+        debugPrint('HTTP error');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Erro HTTP ${response.statusCode}. Verifique a URL do script no SETUP.md.'),
+            const SnackBar(
+              content: Text('Erro ao enviar. Verifique a URL do script no SETUP.md.'),
               backgroundColor: Colors.red,
             ),
           );
@@ -231,50 +348,79 @@ class _PontoPageState extends State<PontoPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isSair = _estaDentro;
+    final borderColor = isSair ? _kSairBlue : _kGrayBorder;
+    final textColor = isSair ? _kSairBlueLight : _kGrayText;
+
     return Scaffold(
-      appBar: AppBar(
-        title: Text('Ponto - ${widget.nome}'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-      ),
-      body: Center(
-        child: SingleChildScrollView(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  _estaDentro ? 'Você está dentro' : 'Você está fora',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                const SizedBox(height: 32),
-                FilledButton(
-                  onPressed: _carregando ? null : _aoClicar,
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(200, 60),
-                    backgroundColor: _estaDentro ? Colors.red : Colors.green,
-                    foregroundColor: Colors.white,
+      backgroundColor: _kBackground,
+      body: SafeArea(
+        child: Column(
+          children: [
+            const Spacer(flex: 2),
+            // Botão circular central (Entrar = cinza, Sair = azul)
+            Center(
+              child: GestureDetector(
+                onTap: _carregando ? null : _aoClicar,
+                child: Container(
+                  width: 200,
+                  height: 200,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _kBackground,
+                    border: Border.all(
+                      color: _carregando ? _kGrayBorder : borderColor,
+                      width: isSair ? 2.5 : 1.5,
+                    ),
                   ),
+                  alignment: Alignment.center,
                   child: _carregando
-                      ? const SizedBox(
-                          width: 24,
-                          height: 24,
+                      ? SizedBox(
+                          width: 28,
+                          height: 28,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: Colors.white,
+                            color: textColor,
                           ),
                         )
                       : Text(
-                          _estaDentro ? 'SAIR' : 'ENTRAR',
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
+                          isSair ? 'Sair' : 'Entrar',
+                          style: GoogleFonts.dmSans(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w600,
+                            color: textColor,
                           ),
                         ),
                 ),
-              ],
+              ),
             ),
-          ),
+            const Spacer(flex: 2),
+            // Nome e Matrícula na parte inferior
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+              child: Column(
+                children: [
+                  Text(
+                    widget.nome,
+                    style: GoogleFonts.dmSans(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: _kGrayText,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    widget.codigo,
+                    style: GoogleFonts.dmSans(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: _kGrayText,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
