@@ -1,7 +1,7 @@
 /**
  * Script do Google Apps Script para receber registros de ponto.
- * Cada profissional tem sua própria aba; cada linha é um dia.
- * Colunas: Data | Entrada | Saída
+ * Cada matrícula tem sua própria aba (evita várias abas ao deslogar).
+ * Na aba: linha 1 = nome do profissional; linha 2 = cabeçalhos; da linha 3 = Data | Entrada | Saída
  *
  * Como configurar:
  * 1. Crie uma planilha no Google Sheets
@@ -40,46 +40,54 @@ function doGet() {
 function doPost(e) {
   try {
     const dados = JSON.parse(e.postData.contents);
+    const matricula = (dados.matricula || '').toString().trim();
     const profissional = (dados.profissional || '').toString().trim();
     const tipo = (dados.tipo || '').toUpperCase();
     const data = dados.data || '';
     const hora = dados.hora || '';
 
-    if (!profissional) {
+    if (!matricula) {
       return ContentService
-        .createTextOutput(JSON.stringify({ ok: false, erro: 'Profissional obrigatório' }))
+        .createTextOutput(JSON.stringify({ ok: false, erro: 'Matrícula obrigatória' }))
         .setMimeType(ContentService.MimeType.JSON);
     }
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let sheet = ss.getSheetByName(profissional);
+    let sheet = ss.getSheetByName(matricula);
 
     if (!sheet) {
-      sheet = ss.insertSheet(profissional);
-      sheet.getRange(1, 1, 1, NUM_COLUNAS).setValues([['Data', 'Entrada', 'Saída']]);
+      sheet = ss.insertSheet(matricula);
+      sheet.getRange(1, 1).setValue('Nome: ' + (profissional || '-'));
+      sheet.getRange(2, 1, 2, NUM_COLUNAS).setValues([['Data', 'Entrada', 'Saída']]);
+    }
+    if (profissional) {
+      sheet.getRange(1, 1).setValue('Nome: ' + profissional);
     }
 
     const dataCol = 1;
     const entradaCol = 2;
     const saidaCol = 3;
+    const headerRow1 = sheet.getRange(1, 1).getValue();
+    const isFormatoNovo = (typeof headerRow1 === 'string' && headerRow1.indexOf('Nome:') === 0);
+    const primeiraLinhaDados = isFormatoNovo ? 3 : 2;
 
     const ultimaLinha = sheet.getLastRow();
     let linhaData = -1;
 
-    if (ultimaLinha >= 2) {
-      const colData = sheet.getRange(2, dataCol, ultimaLinha, dataCol).getValues();
+    if (ultimaLinha >= primeiraLinhaDados) {
+      const colData = sheet.getRange(primeiraLinhaDados, dataCol, ultimaLinha, dataCol).getValues();
       for (let i = 0; i < colData.length; i++) {
         const val = colData[i][0];
         const celulaStr = val ? (typeof val === 'object' && val.getTime ? Utilities.formatDate(val, Session.getScriptTimeZone(), 'dd/MM/yyyy') : String(val)) : '';
         if (celulaStr === data) {
-          linhaData = i + 2;
+          linhaData = i + primeiraLinhaDados;
           break;
         }
       }
     }
 
     if (linhaData < 0) {
-      linhaData = ultimaLinha + 1;
+      linhaData = ultimaLinha < primeiraLinhaDados ? primeiraLinhaDados : ultimaLinha + 1;
       sheet.getRange(linhaData, dataCol).setValue(data);
     }
 

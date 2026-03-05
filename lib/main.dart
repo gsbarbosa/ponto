@@ -221,11 +221,15 @@ class PontoPage extends StatefulWidget {
   State<PontoPage> createState() => _PontoPageState();
 }
 
+/// Intervalo mínimo entre ENTRAR e SAIR (e vice-versa).
+const _minutosEntreRegistros = 10;
+
 class _PontoPageState extends State<PontoPage> {
   bool _estaDentro = false;
   bool _carregando = false;
   String? _ultimaData;
   String? _ultimoTipo;
+  DateTime? _ultimoTimestamp;
 
   // Cole aqui a URL do seu Google Apps Script (veja SETUP.md)
   static const _urlScript =
@@ -244,23 +248,27 @@ class _PontoPageState extends State<PontoPage> {
     final prefs = await SharedPreferences.getInstance();
     final data = prefs.getString('${_prefsKey}_lastDate');
     final tipo = prefs.getString('${_prefsKey}_lastType');
+    final ts = prefs.getInt('${_prefsKey}_lastTimestamp');
     if (mounted) {
       setState(() {
         _ultimaData = data;
         _ultimoTipo = tipo;
+        _ultimoTimestamp = ts != null ? DateTime.fromMillisecondsSinceEpoch(ts) : null;
         _estaDentro = tipo == 'ENTRAR';
       });
     }
   }
 
-  Future<void> _salvarUltimoPonto(String data, String tipo) async {
+  Future<void> _salvarUltimoPonto(String data, String tipo, DateTime timestamp) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('${_prefsKey}_lastDate', data);
     await prefs.setString('${_prefsKey}_lastType', tipo);
+    await prefs.setInt('${_prefsKey}_lastTimestamp', timestamp.millisecondsSinceEpoch);
   }
 
   Future<bool> _enviarParaPlanilha(String tipo, String dataStr, String horaStr) async {
     final body = jsonEncode({
+      'matricula': widget.codigo,
       'profissional': widget.nome,
       'tipo': tipo,
       'data': dataStr,
@@ -275,10 +283,28 @@ class _PontoPageState extends State<PontoPage> {
   }
 
   Future<void> _registrar(String tipo) async {
+    final agora = DateTime.now();
+
+    // Só pode dar saída 10 min depois da entrada, e vice-versa
+    if (_ultimoTimestamp != null) {
+      final diff = agora.difference(_ultimoTimestamp!);
+      if (diff.inMinutes < _minutosEntreRegistros) {
+        final restante = _minutosEntreRegistros - diff.inMinutes;
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Aguarde $restante minuto(s) entre entrada e saída.'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+    }
+
     setState(() => _carregando = true);
     setState(() => _estaDentro = !_estaDentro);
 
-    final agora = DateTime.now();
     final dataStr = '${agora.day.toString().padLeft(2, '0')}/${agora.month.toString().padLeft(2, '0')}/${agora.year}';
     final horaStr = '${agora.hour.toString().padLeft(2, '0')}:${agora.minute.toString().padLeft(2, '0')}:${agora.second.toString().padLeft(2, '0')}';
 
@@ -305,9 +331,10 @@ class _PontoPageState extends State<PontoPage> {
       final sucesso = await _enviarParaPlanilha(tipo, dataStr, horaStr);
 
       if (sucesso) {
-        await _salvarUltimoPonto(dataStr, tipo);
+        await _salvarUltimoPonto(dataStr, tipo, agora);
         _ultimaData = dataStr;
         _ultimoTipo = tipo;
+        _ultimoTimestamp = agora;
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('$tipo registrado às $horaStr')),
