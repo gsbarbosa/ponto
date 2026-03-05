@@ -231,7 +231,8 @@ class _PontoPageState extends State<PontoPage> {
   static const _urlScript =
       'https://script.google.com/macros/s/AKfycbyliKqw-K9PLwfNcVBs1yd-Zo7LU-XAeUgp6ir4sKWIutjkntup2LHECmq2vVrWKUWz/exec';
 
-  String get _prefsKey => 'ponto_${widget.nome}';
+  /// Chave de preferências por matrícula (identificador único). A planilha continua recebendo o nome em 'profissional'.
+  String get _prefsKey => 'ponto_${widget.codigo}';
 
   @override
   void initState() {
