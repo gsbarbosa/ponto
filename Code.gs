@@ -1,6 +1,6 @@
 /**
  * Script do Google Apps Script para receber registros de ponto.
- * Cada matrícula tem sua própria aba (evita várias abas ao deslogar).
+ * Cada usuário tem sua própria aba no formato nome_matrícula (ex.: João_020021209).
  * Na aba: linha 1 = nome do profissional; linha 2 = cabeçalhos; da linha 3 = Data | Entrada | Saída
  *
  * Como configurar:
@@ -52,11 +52,14 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
+    // Nome da aba = nome_matricula (caracteres inválidos no nome são trocados por _; máx. 100 caracteres)
+    const nomeSanitizado = (profissional || 'SemNome').replace(/[\\\/\?\*\[\]]/g, '_').trim();
+    const nomeAba = (nomeSanitizado + '_' + matricula).substring(0, 100);
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let sheet = ss.getSheetByName(matricula);
+    let sheet = ss.getSheetByName(nomeAba);
 
     if (!sheet) {
-      sheet = ss.insertSheet(matricula);
+      sheet = ss.insertSheet(nomeAba);
       sheet.getRange(1, 1).setValue('Nome: ' + (profissional || '-'));
       sheet.getRange(2, 1, 2, NUM_COLUNAS).setValues([['Data', 'Entrada', 'Saída']]);
     }

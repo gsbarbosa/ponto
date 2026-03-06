@@ -6,7 +6,7 @@ Para o app enviar os registros de ENTRAR e SAIR para uma planilha do Google, sig
 
 1. Acesse [sheets.google.com](https://sheets.google.com)
 2. Crie uma nova planilha
-3. O script cria automaticamente uma aba para cada profissional, com colunas: `Data` | `Entrada` | `Saída` | `Observação`
+3. O script cria automaticamente uma aba para cada usuário no formato **nome_matrícula** (ex.: `João_020021209`), com o nome do profissional na primeira linha e colunas: `Data` | `Entrada` | `Saída`
 
 ## 2. Criar o script do Google Apps Script
 
@@ -18,7 +18,9 @@ Para o app enviar os registros de ENTRAR e SAIR para uma planilha do Google, sig
 6. Defina:
    - **Executar como**: Eu
    - **Quem tem acesso**: Qualquer pessoa
-7. Clique em **Implantar** e copie a URL gerada (algo como `https://script.google.com/macros/s/XXXXX/exec`)
+7. Clique em **Implantar** e copie a URL gerada (algo como `https://script.google.com/macros/s/XXXXX/exec`).
+
+**Importante:** sempre que você alterar o `Code.gs`, crie uma **Nova implantação** (ou edite a existente e escolha "Versão" → Nova versão) para que as mudanças passem a valer na URL que o app usa.
 
 ## 3. Configurar o app Flutter
 
