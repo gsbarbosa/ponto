@@ -37,6 +37,22 @@ function doGet() {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+/** Normaliza data para dd/MM/yyyy (com zero à esquerda) para comparação consistente. */
+function normalizarDataStr(val, timezone) {
+  if (!val) return '';
+  if (typeof val === 'object' && val.getTime) {
+    return Utilities.formatDate(val, timezone || Session.getScriptTimeZone(), 'dd/MM/yyyy');
+  }
+  var s = String(val).trim();
+  var parts = s.split(/[\/\-\.]/);
+  if (parts.length !== 3) return s;
+  var d = parseInt(parts[0], 10);
+  var m = parseInt(parts[1], 10);
+  var y = parseInt(parts[2], 10);
+  if (isNaN(d) || isNaN(m) || isNaN(y)) return s;
+  return (d < 10 ? '0' + d : '' + d) + '/' + (m < 10 ? '0' + m : '' + m) + '/' + y;
+}
+
 function doPost(e) {
   try {
     const dados = JSON.parse(e.postData.contents);
@@ -53,7 +69,7 @@ function doPost(e) {
     }
 
     // Nome da aba = nome_matricula (caracteres inválidos no nome são trocados por _; máx. 100 caracteres)
-    const nomeSanitizado = (profissional || 'SemNome').replace(/[\\\/\?\*\[\]]/g, '_').trim();
+    const nomeSanitizado = (profissional || 'SemNome').replace(/[\\\/\?\*\[\]:]/g, '_').trim() || 'SemNome';
     const nomeAba = (nomeSanitizado + '_' + matricula).substring(0, 100);
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     let sheet = ss.getSheetByName(nomeAba);
@@ -74,6 +90,9 @@ function doPost(e) {
     const isFormatoNovo = (typeof headerRow1 === 'string' && headerRow1.indexOf('Nome:') === 0);
     const primeiraLinhaDados = isFormatoNovo ? 3 : 2;
 
+    const tz = Session.getScriptTimeZone();
+    const dataNormalizada = normalizarDataStr(data, tz) || data;
+
     const ultimaLinha = sheet.getLastRow();
     let linhaData = -1;
 
@@ -81,8 +100,8 @@ function doPost(e) {
       const colData = sheet.getRange(primeiraLinhaDados, dataCol, ultimaLinha, dataCol).getValues();
       for (let i = 0; i < colData.length; i++) {
         const val = colData[i][0];
-        const celulaStr = val ? (typeof val === 'object' && val.getTime ? Utilities.formatDate(val, Session.getScriptTimeZone(), 'dd/MM/yyyy') : String(val)) : '';
-        if (celulaStr === data) {
+        const celulaStr = normalizarDataStr(val, tz);
+        if (celulaStr && celulaStr === dataNormalizada) {
           linhaData = i + primeiraLinhaDados;
           break;
         }
@@ -91,7 +110,9 @@ function doPost(e) {
 
     if (linhaData < 0) {
       linhaData = ultimaLinha < primeiraLinhaDados ? primeiraLinhaDados : ultimaLinha + 1;
-      sheet.getRange(linhaData, dataCol).setValue(data);
+      const celData = sheet.getRange(linhaData, dataCol);
+      celData.setValue(dataNormalizada);
+      celData.setNumberFormat('@'); // mantém como texto para não virar data em outro formato
     }
 
     if (tipo === 'ENTRAR') {

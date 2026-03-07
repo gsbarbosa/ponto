@@ -36,8 +36,13 @@ class PontoApp extends StatelessWidget {
   }
 }
 
+// Chaves para persistir sessão de login (sobrevive a F5 / reabrir app)
+const _kPrefsLogado = 'ponto_logado';
+const _kPrefsNome = 'ponto_nome';
+const _kPrefsCodigo = 'ponto_codigo';
+
 /// Controla a navegação: tela de login ou tela de ponto.
-/// Uma vez logado, não há opção de deslogar.
+/// Sessão é salva em SharedPreferences para persistir ao recarregar (F5).
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
 
@@ -46,20 +51,63 @@ class AppShell extends StatefulWidget {
 }
 
 class _AppShellState extends State<AppShell> {
+  bool _sessaoCarregada = false;
   bool _logado = false;
   String _nome = '';
   String _codigo = '';
 
-  void _onLogin(String nome, String codigo) {
-    setState(() {
-      _logado = true;
-      _nome = nome.trim();
-      _codigo = codigo.trim();
-    });
+  @override
+  void initState() {
+    super.initState();
+    _carregarSessao();
+  }
+
+  Future<void> _carregarSessao() async {
+    final prefs = await SharedPreferences.getInstance();
+    final logado = prefs.getBool(_kPrefsLogado) ?? false;
+    final nome = prefs.getString(_kPrefsNome) ?? '';
+    final codigo = prefs.getString(_kPrefsCodigo) ?? '';
+    if (mounted) {
+      setState(() {
+        _sessaoCarregada = true;
+        _logado = logado && nome.isNotEmpty && codigo.isNotEmpty;
+        _nome = nome;
+        _codigo = codigo;
+      });
+    }
+  }
+
+  Future<void> _onLogin(String nome, String codigo) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kPrefsLogado, true);
+    await prefs.setString(_kPrefsNome, nome.trim());
+    await prefs.setString(_kPrefsCodigo, codigo.trim());
+    if (mounted) {
+      setState(() {
+        _logado = true;
+        _nome = nome.trim();
+        _codigo = codigo.trim();
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    if (!_sessaoCarregada) {
+      return Scaffold(
+        backgroundColor: _kBackground,
+        body: Center(
+          child: SizedBox(
+            width: 32,
+            height: 32,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: _kGrayText,
+            ),
+          ),
+        ),
+      );
+    }
     if (_logado) {
       return PontoPage(nome: _nome, codigo: _codigo);
     }
@@ -70,7 +118,7 @@ class _AppShellState extends State<AppShell> {
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key, required this.onLogin});
 
-  final void Function(String nome, String codigo) onLogin;
+  final Future<void> Function(String nome, String codigo) onLogin;
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -227,13 +275,14 @@ const _minutosEntreRegistros = 10;
 class _PontoPageState extends State<PontoPage> {
   bool _estaDentro = false;
   bool _carregando = false;
+  bool _carregandoInicial = true; // evita mostrar estado errado antes de carregar prefs
   String? _ultimaData;
   String? _ultimoTipo;
   DateTime? _ultimoTimestamp;
 
   // Cole aqui a URL do seu Google Apps Script (veja SETUP.md)
   static const _urlScript =
-      'https://script.google.com/macros/s/AKfycby54pTPU03HNGsUjxrFCxT3z4LlDbDENyALU7WAqL1TsO1SUzuks1BVZLBr7zus_8bT/exec';
+      'https://script.google.com/macros/s/AKfycbyroGincTyWEw6fJ-BclviKEZEOkC3FrpUYUZ-UWqVMMKAYVAmr-bjzrBLBQSu_uy_E/exec';
 
   /// Chave de preferências por matrícula (identificador único). A planilha continua recebendo o nome em 'profissional'.
   String get _prefsKey => 'ponto_${widget.codigo}';
@@ -255,6 +304,7 @@ class _PontoPageState extends State<PontoPage> {
         _ultimoTipo = tipo;
         _ultimoTimestamp = ts != null ? DateTime.fromMillisecondsSinceEpoch(ts) : null;
         _estaDentro = tipo == 'ENTRAR';
+        _carregandoInicial = false;
       });
     }
   }
@@ -302,8 +352,10 @@ class _PontoPageState extends State<PontoPage> {
       }
     }
 
-    setState(() => _carregando = true);
-    setState(() => _estaDentro = !_estaDentro);
+    setState(() {
+      _carregando = true;
+      _estaDentro = !_estaDentro;
+    });
 
     final dataStr = '${agora.day.toString().padLeft(2, '0')}/${agora.month.toString().padLeft(2, '0')}/${agora.year}';
     final horaStr = '${agora.hour.toString().padLeft(2, '0')}:${agora.minute.toString().padLeft(2, '0')}:${agora.second.toString().padLeft(2, '0')}';
@@ -332,10 +384,12 @@ class _PontoPageState extends State<PontoPage> {
 
       if (sucesso) {
         await _salvarUltimoPonto(dataStr, tipo, agora);
-        _ultimaData = dataStr;
-        _ultimoTipo = tipo;
-        _ultimoTimestamp = agora;
         if (mounted) {
+          setState(() {
+            _ultimaData = dataStr;
+            _ultimoTipo = tipo;
+            _ultimoTimestamp = agora;
+          });
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('$tipo registrado às $horaStr')),
           );
@@ -389,7 +443,7 @@ class _PontoPageState extends State<PontoPage> {
             // Botão circular central (Entrar = cinza, Sair = azul)
             Center(
               child: GestureDetector(
-                onTap: _carregando ? null : _aoClicar,
+                onTap: (_carregando || _carregandoInicial) ? null : _aoClicar,
                 child: Container(
                   width: 200,
                   height: 200,
@@ -397,12 +451,12 @@ class _PontoPageState extends State<PontoPage> {
                     shape: BoxShape.circle,
                     color: _kBackground,
                     border: Border.all(
-                      color: _carregando ? _kGrayBorder : borderColor,
+                      color: (_carregando || _carregandoInicial) ? _kGrayBorder : borderColor,
                       width: isSair ? 2.5 : 1.5,
                     ),
                   ),
                   alignment: Alignment.center,
-                  child: _carregando
+                  child: (_carregando || _carregandoInicial)
                       ? SizedBox(
                           width: 28,
                           height: 28,
