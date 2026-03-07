@@ -282,7 +282,7 @@ class _PontoPageState extends State<PontoPage> {
 
   // Cole aqui a URL do seu Google Apps Script (veja SETUP.md)
   static const _urlScript =
-      'https://script.google.com/macros/s/AKfycbyNHutLqLUwhp6ujaK5rkJkMBjVSG39GPBbTQigyTFtnEGyr0UGVUSj7_exu4LpMsNe/exec';
+      'https://script.google.com/macros/s/AKfycbwNeSWsxvEHCCv_rP6LWeu7ZAg4CdJ9u7RazcZm0IXAaU1Q3NAbeG1JnuVvfy9yACX5/exec';
 
   /// Chave de preferências por matrícula (identificador único). A planilha continua recebendo o nome em 'profissional'.
   String get _prefsKey => 'ponto_${widget.codigo}';

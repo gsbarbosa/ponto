@@ -25,7 +25,9 @@ function formatarPlanilha(sheet) {
     backgrounds.push([CORES_COLUNAS[0], CORES_COLUNAS[1], CORES_COLUNAS[2]]);
   }
   range.setBackgrounds(backgrounds);
-  range.setHorizontalAlignment(SpreadsheetApp.HorizontalAlignment.LEFT);
+  try {
+    range.setHorizontalAlignment(SpreadsheetApp.HorizontalAlignment.LEFT);
+  } catch (e) { /* enum pode ser indefinido em Web App */ }
   sheet.getRange(1, 1, 1, 3).setFontWeight(null);
   sheet.setColumnWidths(1, 3, LARGURA_COLUNA);
   SpreadsheetApp.flush();
@@ -122,8 +124,9 @@ function doPost(e) {
       sheet.getRange(linhaData, saidaCol).setValue(hora);
     }
 
-    sheet.getRange(linhaData, 1, linhaData, NUM_COLUNAS)
-      .setHorizontalAlignment(SpreadsheetApp.HorizontalAlignment.LEFT);
+    try {
+      sheet.getRange(linhaData, 1, 1, NUM_COLUNAS).setHorizontalAlignment(SpreadsheetApp.HorizontalAlignment.LEFT);
+    } catch (e) { /* enum pode ser indefinido em Web App */ }
 
     formatarPlanilha(sheet);
     SpreadsheetApp.flush(); // garante que a escrita foi persistida antes de responder
