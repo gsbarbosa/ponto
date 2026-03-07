@@ -77,7 +77,8 @@ function doPost(e) {
     if (!sheet) {
       sheet = ss.insertSheet(nomeAba);
       sheet.getRange(1, 1).setValue('Nome: ' + (profissional || '-'));
-      sheet.getRange(2, 1, 2, NUM_COLUNAS).setValues([['Data', 'Entrada', 'Saída']]);
+      // getRange(linha, col, numLinhas, numCols) — 3º arg = quantidade de linhas, não linha final
+      sheet.getRange(2, 1, 1, NUM_COLUNAS).setValues([['Data', 'Entrada', 'Saída']]);
     }
     if (profissional) {
       sheet.getRange(1, 1).setValue('Nome: ' + profissional);
