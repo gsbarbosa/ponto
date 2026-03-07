@@ -125,6 +125,7 @@ function doPost(e) {
       .setHorizontalAlignment(SpreadsheetApp.HorizontalAlignment.LEFT);
 
     formatarPlanilha(sheet);
+    SpreadsheetApp.flush(); // garante que a escrita foi persistida antes de responder
 
     return ContentService
       .createTextOutput(JSON.stringify({ ok: true }))

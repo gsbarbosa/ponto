@@ -282,7 +282,7 @@ class _PontoPageState extends State<PontoPage> {
 
   // Cole aqui a URL do seu Google Apps Script (veja SETUP.md)
   static const _urlScript =
-      'https://script.google.com/macros/s/AKfycbyroGincTyWEw6fJ-BclviKEZEOkC3FrpUYUZ-UWqVMMKAYVAmr-bjzrBLBQSu_uy_E/exec';
+      'https://script.google.com/macros/s/AKfycbyBnoTlBRNmztTkeq_k-tBRH6xVyEiT5k_eeCUQgenFgto-3wVCJhIwBP4OhF2m30bA/exec';
 
   /// Chave de preferências por matrícula (identificador único). A planilha continua recebendo o nome em 'profissional'.
   String get _prefsKey => 'ponto_${widget.codigo}';
@@ -316,7 +316,8 @@ class _PontoPageState extends State<PontoPage> {
     await prefs.setInt('${_prefsKey}_lastTimestamp', timestamp.millisecondsSinceEpoch);
   }
 
-  Future<bool> _enviarParaPlanilha(String tipo, String dataStr, String horaStr) async {
+  /// Retorna (sucesso, mensagemDeErro). O script da planilha devolve HTTP 200 mesmo quando falha; é preciso checar o body.
+  Future<(bool, String?)> _enviarParaPlanilha(String tipo, String dataStr, String horaStr) async {
     final body = jsonEncode({
       'matricula': widget.codigo,
       'profissional': widget.nome,
@@ -329,7 +330,18 @@ class _PontoPageState extends State<PontoPage> {
       headers: {'Content-Type': 'text/plain'},
       body: body,
     ).timeout(const Duration(seconds: 10));
-    return response.statusCode >= 200 && response.statusCode < 400;
+
+    if (response.statusCode < 200 || response.statusCode >= 400) {
+      return (false, 'HTTP ${response.statusCode}');
+    }
+    try {
+      final json = jsonDecode(response.body) as Map<String, dynamic>?;
+      final ok = json?['ok'] == true;
+      final erro = json?['erro']?.toString();
+      return (ok, ok ? null : (erro ?? 'Resposta inválida da planilha'));
+    } catch (_) {
+      return (false, 'Resposta inválida da planilha');
+    }
   }
 
   Future<void> _registrar(String tipo) async {
@@ -365,13 +377,13 @@ class _PontoPageState extends State<PontoPage> {
       if (_ultimaData != null &&
           _ultimaData != dataStr &&
           _ultimoTipo == 'ENTRAR') {
-        final okSairAnterior = await _enviarParaPlanilha('SAIR', _ultimaData!, 'Não informado');
+        final (okSairAnterior, msgSair) = await _enviarParaPlanilha('SAIR', _ultimaData!, 'Não informado');
         if (!okSairAnterior) {
           setState(() => _estaDentro = !_estaDentro);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Erro ao registrar saída do dia anterior.'),
+              SnackBar(
+                content: Text(msgSair ?? 'Erro ao registrar saída do dia anterior.'),
                 backgroundColor: Colors.red,
               ),
             );
@@ -380,7 +392,7 @@ class _PontoPageState extends State<PontoPage> {
         }
       }
 
-      final sucesso = await _enviarParaPlanilha(tipo, dataStr, horaStr);
+      final (sucesso, msgErro) = await _enviarParaPlanilha(tipo, dataStr, horaStr);
 
       if (sucesso) {
         await _salvarUltimoPonto(dataStr, tipo, agora);
@@ -396,11 +408,11 @@ class _PontoPageState extends State<PontoPage> {
         }
       } else {
         setState(() => _estaDentro = !_estaDentro);
-        debugPrint('HTTP error');
+        debugPrint('Planilha: $msgErro');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Erro ao enviar. Verifique a URL do script no SETUP.md.'),
+            SnackBar(
+              content: Text(msgErro ?? 'Erro ao enviar. Verifique a URL do script no SETUP.md.'),
               backgroundColor: Colors.red,
             ),
           );
