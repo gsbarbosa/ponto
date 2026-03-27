@@ -29,6 +29,7 @@ const _kPrefsAdmin = 'ponto_admin';
 const _kPrefsTrocaSenha = 'ponto_troca_senha';
 const _senhaInicialFuncionario = 'teatrofeluma';
 const _senhaInicialAdmin = 'teatrofelumaadmin';
+const _kColecaoSegurancaUsuarios = 'seguranca_usuarios';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -248,11 +249,25 @@ class _LoginPageState extends State<LoginPage> {
 
   bool _isSenhaAdmin(String senha) => senha.toLowerCase().endsWith('admin');
 
+  Future<bool> _senhaInicialBloqueada(String email) async {
+    final doc = await FirebaseFirestore.instance
+        .collection(_kColecaoSegurancaUsuarios)
+        .doc(email.toLowerCase())
+        .get()
+        .timeout(_firestoreTimeout);
+    return doc.data()?['senhaInicialBloqueada'] == true;
+  }
+
   Future<void> _loginFuncionario(String codigo, String senha) async {
     final email = _emailFuncionario(codigo);
     final local = email.split('@').first;
     if (local.isEmpty) {
       throw Exception('Matrícula inválida para gerar o login.');
+    }
+    if (senha == _senhaInicialFuncionario && await _senhaInicialBloqueada(email)) {
+      throw Exception(
+        'Senha inicial desativada para este usuário. Use a senha nova.',
+      );
     }
 
     try {
@@ -295,6 +310,11 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _loginAdminPorMatricula(String codigo, String senha) async {
     final email = _emailFuncionario(codigo);
+    if (senha == _senhaInicialAdmin && await _senhaInicialBloqueada(email)) {
+      throw Exception(
+        'Senha inicial de admin desativada para este usuário. Use a senha nova.',
+      );
+    }
     try {
       final cred = await FirebaseAuth.instance
           .signInWithEmailAndPassword(email: email, password: senha)
@@ -1464,7 +1484,7 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
       _showMessage('As senhas não conferem.', Colors.orange);
       return;
     }
-    if (novaSenha == _senhaInicialFuncionario) {
+    if (novaSenha == _senhaInicialFuncionario || novaSenha == _senhaInicialAdmin) {
       _showMessage('Escolha uma senha diferente da senha inicial.', Colors.orange);
       return;
     }
@@ -1479,6 +1499,17 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
     setState(() => _salvando = true);
     try {
       await user.updatePassword(novaSenha).timeout(_authTimeout);
+      final email = (user.email ?? '').toLowerCase();
+      if (email.isNotEmpty) {
+        await FirebaseFirestore.instance
+            .collection(_kColecaoSegurancaUsuarios)
+            .doc(email)
+            .set({
+              'senhaInicialBloqueada': true,
+              'updatedAt': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true))
+            .timeout(_firestoreTimeout);
+      }
       await widget.onSenhaAtualizada();
       if (!mounted) return;
       _showMessage('Senha atualizada com sucesso.', Colors.green);
