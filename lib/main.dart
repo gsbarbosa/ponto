@@ -325,6 +325,61 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
+  Future<void> _abrirRecuperacaoSenha() async {
+    final matriculaController = TextEditingController(
+      text: _codigoController.text.trim(),
+    );
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Recuperar senha'),
+          content: TextField(
+            controller: matriculaController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Matrícula',
+              helperText: 'Usaremos o email interno gerado pela matrícula.',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final matricula = matriculaController.text.trim();
+                if (matricula.isEmpty) {
+                  _showMessage('Informe a matrícula.', Colors.orange);
+                  return;
+                }
+                final email = _emailFuncionario(matricula);
+                try {
+                  await FirebaseAuth.instance
+                      .sendPasswordResetEmail(email: email)
+                      .timeout(_authTimeout);
+                  if (!dialogContext.mounted) return;
+                  Navigator.of(dialogContext).pop();
+                  _showMessage(
+                    'Se a conta existir, o email de recuperação foi enviado.',
+                    Colors.green,
+                  );
+                } on FirebaseAuthException catch (e) {
+                  _showMessage(_traduzErroAuth(e), Colors.red);
+                } on TimeoutException {
+                  _showMessage('Tempo excedido ao solicitar recuperação.', Colors.red);
+                }
+              },
+              child: const Text('Enviar recuperação'),
+            ),
+          ],
+        );
+      },
+    );
+    matriculaController.dispose();
+  }
+
   String _traduzErroAuth(FirebaseAuthException e) {
     switch (e.code) {
       case 'invalid-email':
@@ -429,6 +484,11 @@ class _LoginPageState extends State<LoginPage> {
                               ),
                             ),
                     ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: _entrando ? null : _abrirRecuperacaoSenha,
+                    child: const Text('Esqueci minha senha'),
                   ),
                 ],
               ),
