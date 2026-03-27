@@ -822,7 +822,7 @@ class _PontoPageState extends State<PontoPage> {
   }
 }
 
-class AdminPage extends StatelessWidget {
+class AdminPage extends StatefulWidget {
   const AdminPage({
     super.key,
     required this.nome,
@@ -834,19 +834,35 @@ class AdminPage extends StatelessWidget {
   final String codigo;
   final Future<void> Function() onLogout;
 
+  @override
+  State<AdminPage> createState() => _AdminPageState();
+}
+
+class _AdminPageState extends State<AdminPage> {
+  final _buscaController = TextEditingController();
+  String _busca = '';
+  String _filtroTipo = 'TODOS';
+  String _filtroPeriodo = '30D';
+  String _filtroFuncionario = 'TODOS';
+  String _filtroStatusSolicitacao = 'PENDENTE';
+
+  @override
+  void dispose() {
+    _buscaController.dispose();
+    super.dispose();
+  }
+
   Stream<QuerySnapshot<Map<String, dynamic>>> _streamPontos() {
     return FirebaseFirestore.instance
         .collection('pontos')
-        .orderBy('timestamp', descending: true)
-        .limit(500)
+        .limit(1200)
         .snapshots();
   }
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> _streamSolicitacoesPendentes() {
+  Stream<QuerySnapshot<Map<String, dynamic>>> _streamSolicitacoes() {
     return FirebaseFirestore.instance
         .collection('solicitacoes_correcao')
-        .where('status', isEqualTo: 'pendente')
-        .limit(100)
+        .limit(800)
         .snapshots();
   }
 
@@ -860,7 +876,7 @@ class AdminPage extends StatelessWidget {
           .doc(solicitacaoId)
           .update({
             'status': 'aprovada',
-            'decisaoPor': '$nome ($codigo)',
+            'decisaoPor': '${widget.nome} (${widget.codigo})',
             'decisaoEm': FieldValue.serverTimestamp(),
           })
           .timeout(_firestoreTimeout);
@@ -918,7 +934,7 @@ class AdminPage extends StatelessWidget {
                       .update({
                         'status': 'rejeitada',
                         'motivoRejeicao': motivo,
-                        'decisaoPor': '$nome ($codigo)',
+                        'decisaoPor': '${widget.nome} (${widget.codigo})',
                         'decisaoEm': FieldValue.serverTimestamp(),
                       })
                       .timeout(_firestoreTimeout);
@@ -938,6 +954,75 @@ class AdminPage extends StatelessWidget {
       },
     );
     controller.dispose();
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _filtrarPontos(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    final agora = DateTime.now();
+    DateTime? inicio;
+    if (_filtroPeriodo == 'HOJE') {
+      inicio = DateTime(agora.year, agora.month, agora.day);
+    } else if (_filtroPeriodo == '7D') {
+      inicio = agora.subtract(const Duration(days: 7));
+    } else if (_filtroPeriodo == '30D') {
+      inicio = agora.subtract(const Duration(days: 30));
+    }
+
+    final busca = _busca.trim().toLowerCase();
+    final filtrados = docs.where((doc) {
+      final d = doc.data();
+      final nome = (d['nome'] ?? '').toString();
+      final matricula = (d['matricula'] ?? '').toString();
+      final tipo = (d['tipo'] ?? '').toString();
+      final ts = d['timestamp'];
+      final dt = ts is Timestamp ? ts.toDate() : null;
+
+      final okBusca = busca.isEmpty ||
+          nome.toLowerCase().contains(busca) ||
+          matricula.toLowerCase().contains(busca);
+      final okTipo = _filtroTipo == 'TODOS' || tipo == _filtroTipo;
+      final okFuncionario = _filtroFuncionario == 'TODOS' || matricula == _filtroFuncionario;
+      final okPeriodo = inicio == null || (dt != null && !dt.isBefore(inicio));
+      return okBusca && okTipo && okFuncionario && okPeriodo;
+    }).toList();
+
+    filtrados.sort((a, b) {
+      final aTs = a.data()['timestamp'];
+      final bTs = b.data()['timestamp'];
+      final aDt = aTs is Timestamp ? aTs.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+      final bDt = bTs is Timestamp ? bTs.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+      return bDt.compareTo(aDt);
+    });
+    return filtrados;
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _filtrarSolicitacoes(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    final busca = _busca.trim().toLowerCase();
+    final filtrados = docs.where((doc) {
+      final d = doc.data();
+      final nome = (d['nome'] ?? '').toString();
+      final matricula = (d['matricula'] ?? '').toString();
+      final justificativa = (d['justificativa'] ?? '').toString();
+      final status = (d['status'] ?? '').toString().toUpperCase();
+      final okBusca = busca.isEmpty ||
+          nome.toLowerCase().contains(busca) ||
+          matricula.toLowerCase().contains(busca) ||
+          justificativa.toLowerCase().contains(busca);
+      final okStatus = _filtroStatusSolicitacao == 'TODOS' || status == _filtroStatusSolicitacao;
+      return okBusca && okStatus;
+    }).toList();
+
+    filtrados.sort((a, b) {
+      final aTs = a.data()['createdAt'];
+      final bTs = b.data()['createdAt'];
+      final aDt = aTs is Timestamp ? aTs.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+      final bDt = bTs is Timestamp ? bTs.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+      return bDt.compareTo(aDt);
+    });
+    return filtrados;
   }
 
   Future<void> _exportarCsv(BuildContext context, String nomeArquivo) async {
@@ -975,6 +1060,34 @@ class AdminPage extends StatelessWidget {
     return '"$raw"';
   }
 
+  Widget _kpiCard(String titulo, String valor, {Color? color}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        border: Border.all(color: _kGrayBorder.withValues(alpha: 0.35)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            titulo,
+            style: GoogleFonts.dmSans(fontSize: 11, color: _kGrayText),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            valor,
+            style: GoogleFonts.dmSans(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              color: color ?? Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -983,175 +1096,270 @@ class AdminPage extends StatelessWidget {
         title: const Text('Administrador'),
         actions: [
           IconButton(
-            onPressed: onLogout,
+            onPressed: widget.onLogout,
             icon: const Icon(Icons.logout),
             tooltip: 'Sair',
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                Text(
-                  '$nome ($codigo)',
-                  style: GoogleFonts.dmSans(
-                    fontSize: 14,
-                    color: _kGrayText,
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: _streamPontos(),
+        builder: (context, pontosSnap) {
+          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: _streamSolicitacoes(),
+            builder: (context, solicitacoesSnap) {
+              if (pontosSnap.connectionState == ConnectionState.waiting ||
+                  solicitacoesSnap.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (pontosSnap.hasError) {
+                return Center(
+                  child: Text(
+                    'Erro ao carregar pontos: ${pontosSnap.error}',
+                    style: GoogleFonts.dmSans(color: Colors.red),
                   ),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: () => _exportarCsv(context, 'pontos_excel.csv'),
-                        icon: const Icon(Icons.table_chart),
-                        label: const Text('Exportar Excel'),
+                );
+              }
+              if (solicitacoesSnap.hasError) {
+                return Center(
+                  child: Text(
+                    'Erro ao carregar solicitações: ${solicitacoesSnap.error}',
+                    style: GoogleFonts.dmSans(color: Colors.red),
+                  ),
+                );
+              }
+
+              final pontosDocs = pontosSnap.data?.docs ?? [];
+              final solicitacoesDocs = solicitacoesSnap.data?.docs ?? [];
+              final pontosFiltrados = _filtrarPontos(pontosDocs);
+              final solicitacoesFiltradas = _filtrarSolicitacoes(solicitacoesDocs);
+
+              final funcionarios = <String>{};
+              for (final p in pontosDocs) {
+                final m = (p.data()['matricula'] ?? '').toString().trim();
+                if (m.isNotEmpty) funcionarios.add(m);
+              }
+              final funcionariosOrdenados = funcionarios.toList()..sort();
+
+              final pendentes = solicitacoesDocs
+                  .where((d) => (d.data()['status'] ?? '').toString() == 'pendente')
+                  .length;
+              final totalEntradas = pontosDocs
+                  .where((d) => (d.data()['tipo'] ?? '').toString() == 'ENTRAR')
+                  .length;
+              final totalSaidas = pontosDocs
+                  .where((d) => (d.data()['tipo'] ?? '').toString() == 'SAIR')
+                  .length;
+
+              return ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Text(
+                    '${widget.nome} (${widget.codigo})',
+                    style: GoogleFonts.dmSans(fontSize: 14, color: _kGrayText),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: () => _exportarCsv(context, 'pontos_excel.csv'),
+                          icon: const Icon(Icons.table_chart),
+                          label: const Text('Exportar Excel'),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: () => _exportarCsv(context, 'pontos_google_sheets.csv'),
-                        icon: const Icon(Icons.cloud_upload),
-                        label: const Text('Exportar Google Sheets'),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: () => _exportarCsv(context, 'pontos_google_sheets.csv'),
+                          icon: const Icon(Icons.cloud_upload),
+                          label: const Text('Exportar Sheets'),
+                        ),
                       ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  GridView.count(
+                    crossAxisCount: 2,
+                    childAspectRatio: 2.4,
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    mainAxisSpacing: 8,
+                    crossAxisSpacing: 8,
+                    children: [
+                      _kpiCard('Funcionários', '${funcionarios.length}'),
+                      _kpiCard('Pendências', '$pendentes', color: Colors.orangeAccent),
+                      _kpiCard('Entradas', '$totalEntradas', color: Colors.greenAccent),
+                      _kpiCard('Saídas', '$totalSaidas', color: Colors.lightBlueAccent),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _buscaController,
+                    onChanged: (v) => setState(() => _busca = v),
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search),
+                      labelText: 'Buscar por nome, matrícula ou justificativa',
                     ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _streamSolicitacoesPendentes(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snapshot.hasError) {
-                  return Center(
-                    child: Text(
-                      'Erro ao carregar solicitações: ${snapshot.error}',
-                      style: GoogleFonts.dmSans(color: Colors.red),
-                    ),
-                  );
-                }
-                final docs = [...(snapshot.data?.docs ?? [])]
-                  ..sort((a, b) {
-                    final aTs = a.data()['createdAt'];
-                    final bTs = b.data()['createdAt'];
-                    final aDt = aTs is Timestamp ? aTs.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
-                    final bDt = bTs is Timestamp ? bTs.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
-                    return bDt.compareTo(aDt);
-                  });
-                if (docs.isEmpty) {
-                  return Center(
-                    child: Text(
-                      'Sem solicitações pendentes.',
-                      style: GoogleFonts.dmSans(color: _kGrayText),
-                    ),
-                  );
-                }
-                return ListView.separated(
-                  itemCount: docs.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final doc = docs[index];
-                    final d = doc.data();
-                    return ListTile(
-                      title: Text(
-                        '${d['nome'] ?? ''} (${d['matricula'] ?? ''})',
-                        style: GoogleFonts.dmSans(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      DropdownMenu<String>(
+                        initialSelection: _filtroTipo,
+                        label: const Text('Tipo'),
+                        onSelected: (v) => setState(() => _filtroTipo = v ?? 'TODOS'),
+                        dropdownMenuEntries: const [
+                          DropdownMenuEntry(value: 'TODOS', label: 'Todos'),
+                          DropdownMenuEntry(value: 'ENTRAR', label: 'Entradas'),
+                          DropdownMenuEntry(value: 'SAIR', label: 'Saídas'),
+                        ],
                       ),
-                      subtitle: Text(
-                        'Solicitado: ${d['tipoSolicitado'] ?? '-'} ${d['dataSolicitada'] ?? ''} ${d['horaSolicitada'] ?? ''}\nJustificativa: ${d['justificativa'] ?? ''}',
-                        style: GoogleFonts.dmSans(color: _kGrayText),
+                      DropdownMenu<String>(
+                        initialSelection: _filtroPeriodo,
+                        label: const Text('Período'),
+                        onSelected: (v) => setState(() => _filtroPeriodo = v ?? '30D'),
+                        dropdownMenuEntries: const [
+                          DropdownMenuEntry(value: 'HOJE', label: 'Hoje'),
+                          DropdownMenuEntry(value: '7D', label: '7 dias'),
+                          DropdownMenuEntry(value: '30D', label: '30 dias'),
+                          DropdownMenuEntry(value: 'TODOS', label: 'Tudo'),
+                        ],
                       ),
-                      isThreeLine: true,
-                      trailing: Wrap(
-                        spacing: 6,
-                        children: [
-                          IconButton(
-                            tooltip: 'Aprovar',
-                            onPressed: () => _aprovarSolicitacao(
-                              context: context,
-                              solicitacaoId: doc.id,
-                            ),
-                            icon: const Icon(Icons.check_circle, color: Colors.green),
-                          ),
-                          IconButton(
-                            tooltip: 'Rejeitar',
-                            onPressed: () => _rejeitarSolicitacao(
-                              context: context,
-                              solicitacaoId: doc.id,
-                            ),
-                            icon: const Icon(Icons.cancel, color: Colors.red),
+                      DropdownMenu<String>(
+                        initialSelection: _filtroStatusSolicitacao,
+                        label: const Text('Solicitações'),
+                        onSelected: (v) =>
+                            setState(() => _filtroStatusSolicitacao = v ?? 'PENDENTE'),
+                        dropdownMenuEntries: const [
+                          DropdownMenuEntry(value: 'PENDENTE', label: 'Pendentes'),
+                          DropdownMenuEntry(value: 'APROVADA', label: 'Aprovadas'),
+                          DropdownMenuEntry(value: 'REJEITADA', label: 'Rejeitadas'),
+                          DropdownMenuEntry(value: 'TODOS', label: 'Todas'),
+                        ],
+                      ),
+                      DropdownMenu<String>(
+                        initialSelection: _filtroFuncionario,
+                        label: const Text('Funcionário'),
+                        onSelected: (v) => setState(() => _filtroFuncionario = v ?? 'TODOS'),
+                        dropdownMenuEntries: [
+                          const DropdownMenuEntry(value: 'TODOS', label: 'Todos'),
+                          ...funcionariosOrdenados.map(
+                            (m) => DropdownMenuEntry(value: m, label: m),
                           ),
                         ],
                       ),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _streamPontos(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snapshot.hasError) {
-                  return Center(
-                    child: Text(
-                      'Erro ao carregar pontos: ${snapshot.error}',
-                      style: GoogleFonts.dmSans(color: Colors.red),
-                    ),
-                  );
-                }
-                final docs = snapshot.data?.docs ?? [];
-                if (docs.isEmpty) {
-                  return Center(
-                    child: Text(
-                      'Nenhum ponto registrado.',
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Solicitações (${solicitacoesFiltradas.length})',
+                    style: GoogleFonts.dmSans(fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 8),
+                  if (solicitacoesFiltradas.isEmpty)
+                    Text(
+                      'Nenhuma solicitação para os filtros atuais.',
                       style: GoogleFonts.dmSans(color: _kGrayText),
-                    ),
-                  );
-                }
-
-                return ListView.separated(
-                  itemCount: docs.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final d = docs[index].data();
-                    final nome = d['nome'] ?? '';
-                    final matricula = d['matricula'] ?? '';
-                    final tipo = d['tipo'] ?? '';
-                    final data = d['data'] ?? '';
-                    final hora = d['hora'] ?? '';
-                    return ListTile(
-                      title: Text(
-                        '$nome ($matricula)',
-                        style: GoogleFonts.dmSans(fontWeight: FontWeight.w600),
-                      ),
-                      subtitle: Text(
-                        '$tipo - $data $hora',
-                        style: GoogleFonts.dmSans(color: _kGrayText),
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ],
+                    )
+                  else
+                    ...solicitacoesFiltradas.map((doc) {
+                      final d = doc.data();
+                      final status = (d['status'] ?? '').toString();
+                      final isPendente = status == 'pendente';
+                      return Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${d['nome'] ?? ''} (${d['matricula'] ?? ''})',
+                                style: GoogleFonts.dmSans(fontWeight: FontWeight.w700),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Status: ${status.toUpperCase()}',
+                                style: GoogleFonts.dmSans(
+                                  color: isPendente
+                                      ? Colors.orangeAccent
+                                      : (status == 'aprovada' ? Colors.green : Colors.redAccent),
+                                ),
+                              ),
+                              Text(
+                                'Solicitado: ${d['tipoSolicitado'] ?? '-'} '
+                                '${d['dataSolicitada'] ?? ''} ${d['horaSolicitada'] ?? ''}',
+                                style: GoogleFonts.dmSans(color: _kGrayText),
+                              ),
+                              Text(
+                                'Justificativa: ${d['justificativa'] ?? ''}',
+                                style: GoogleFonts.dmSans(color: _kGrayText),
+                              ),
+                              if (!isPendente && (d['motivoRejeicao'] ?? '').toString().isNotEmpty)
+                                Text(
+                                  'Motivo rejeição: ${d['motivoRejeicao']}',
+                                  style: GoogleFonts.dmSans(color: Colors.redAccent),
+                                ),
+                              if (isPendente)
+                                Row(
+                                  children: [
+                                    TextButton.icon(
+                                      onPressed: () => _aprovarSolicitacao(
+                                        context: context,
+                                        solicitacaoId: doc.id,
+                                      ),
+                                      icon: const Icon(Icons.check_circle, color: Colors.green),
+                                      label: const Text('Aprovar'),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed: () => _rejeitarSolicitacao(
+                                        context: context,
+                                        solicitacaoId: doc.id,
+                                      ),
+                                      icon: const Icon(Icons.cancel, color: Colors.red),
+                                      label: const Text('Rejeitar'),
+                                    ),
+                                  ],
+                                ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Registros de ponto (${pontosFiltrados.length})',
+                    style: GoogleFonts.dmSans(fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 8),
+                  if (pontosFiltrados.isEmpty)
+                    Text(
+                      'Nenhum registro para os filtros atuais.',
+                      style: GoogleFonts.dmSans(color: _kGrayText),
+                    )
+                  else
+                    ...pontosFiltrados.take(300).map((doc) {
+                      final d = doc.data();
+                      return ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          '${d['nome'] ?? ''} (${d['matricula'] ?? ''})',
+                          style: GoogleFonts.dmSans(fontWeight: FontWeight.w600),
+                        ),
+                        subtitle: Text(
+                          '${d['tipo'] ?? ''} - ${d['data'] ?? ''} ${d['hora'] ?? ''}',
+                          style: GoogleFonts.dmSans(color: _kGrayText),
+                        ),
+                      );
+                    }),
+                ],
+              );
+            },
+          );
+        },
       ),
     );
   }
