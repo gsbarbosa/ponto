@@ -1,0 +1,13 @@
+{
+  "name": "ponto-admin-tools",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Admin scripts for Firebase project",
+  "type": "module",
+  "scripts": {
+    "admin:set-claim": "node scripts/set-admin-claim.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.4.0"
+  }
+}

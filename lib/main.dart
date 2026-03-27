@@ -1,18 +1,42 @@
-import 'dart:convert';
+import 'dart:async';
+import 'dart:typed_data';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:http/http.dart' as http;
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-void main() => runApp(const PontoApp());
+import 'firebase_options.dart';
 
-// Cores do tema escuro (conforme layout)
 const _kBackground = Color(0xFF1e1e1e);
 const _kGrayBorder = Color(0xFF9e9e9e);
 const _kGrayText = Color(0xFFb0b0b0);
 const _kButtonFill = Color(0xFF2d2d2d);
 const _kSairBlue = Color(0xFF4285F4);
 const _kSairBlueLight = Color(0xFF60B0FF);
+const _minutosEntreRegistros = 10;
+const _firestoreTimeout = Duration(seconds: 12);
+const _registroTimeout = Duration(seconds: 20);
+const _authTimeout = Duration(seconds: 12);
+
+const _kPrefsLogado = 'ponto_logado';
+const _kPrefsNome = 'ponto_nome';
+const _kPrefsCodigo = 'ponto_codigo';
+const _kPrefsAdmin = 'ponto_admin';
+const _kPrefsTrocaSenha = 'ponto_troca_senha';
+const _senhaInicialFuncionario = 'teatrofeluma';
+const _senhaInicialAdmin = 'teatrofelumaadmin';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+  runApp(const PontoApp());
+}
 
 class PontoApp extends StatelessWidget {
   const PontoApp({super.key});
@@ -24,7 +48,7 @@ class PontoApp extends StatelessWidget {
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: _kBackground,
-        colorScheme: ColorScheme.dark(
+        colorScheme: const ColorScheme.dark(
           surface: _kBackground,
           primary: _kSairBlue,
           onSurface: _kGrayText,
@@ -36,13 +60,6 @@ class PontoApp extends StatelessWidget {
   }
 }
 
-// Chaves para persistir sessão de login (sobrevive a F5 / reabrir app)
-const _kPrefsLogado = 'ponto_logado';
-const _kPrefsNome = 'ponto_nome';
-const _kPrefsCodigo = 'ponto_codigo';
-
-/// Controla a navegação: tela de login ou tela de ponto.
-/// Sessão é salva em SharedPreferences para persistir ao recarregar (F5).
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
 
@@ -53,6 +70,8 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   bool _sessaoCarregada = false;
   bool _logado = false;
+  bool _admin = false;
+  bool _precisaTrocarSenha = false;
   String _nome = '';
   String _codigo = '';
 
@@ -67,58 +86,103 @@ class _AppShellState extends State<AppShell> {
     final logado = prefs.getBool(_kPrefsLogado) ?? false;
     final nome = prefs.getString(_kPrefsNome) ?? '';
     final codigo = prefs.getString(_kPrefsCodigo) ?? '';
-    if (mounted) {
-      setState(() {
-        _sessaoCarregada = true;
-        _logado = logado && nome.isNotEmpty && codigo.isNotEmpty;
-        _nome = nome;
-        _codigo = codigo;
-      });
-    }
+    final admin = prefs.getBool(_kPrefsAdmin) ?? false;
+    final precisaTrocarSenha = prefs.getBool(_kPrefsTrocaSenha) ?? false;
+
+    if (!mounted) return;
+    setState(() {
+      _sessaoCarregada = true;
+      _logado = logado && nome.isNotEmpty && codigo.isNotEmpty;
+      _nome = nome;
+      _codigo = codigo;
+      _admin = admin;
+      _precisaTrocarSenha = precisaTrocarSenha;
+    });
   }
 
-  Future<void> _onLogin(String nome, String codigo) async {
+  Future<void> _onLogin({
+    required String nome,
+    required String codigo,
+    required bool admin,
+    required bool precisaTrocarSenha,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kPrefsLogado, true);
     await prefs.setString(_kPrefsNome, nome.trim());
     await prefs.setString(_kPrefsCodigo, codigo.trim());
-    if (mounted) {
-      setState(() {
-        _logado = true;
-        _nome = nome.trim();
-        _codigo = codigo.trim();
-      });
-    }
+    await prefs.setBool(_kPrefsAdmin, admin);
+    await prefs.setBool(_kPrefsTrocaSenha, precisaTrocarSenha);
+
+    if (!mounted) return;
+    setState(() {
+      _logado = true;
+      _nome = nome.trim();
+      _codigo = codigo.trim();
+      _admin = admin;
+      _precisaTrocarSenha = precisaTrocarSenha;
+    });
+  }
+
+  Future<void> _logout() async {
+    await FirebaseAuth.instance.signOut();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kPrefsLogado);
+    await prefs.remove(_kPrefsNome);
+    await prefs.remove(_kPrefsCodigo);
+    await prefs.remove(_kPrefsAdmin);
+    await prefs.remove(_kPrefsTrocaSenha);
+
+    if (!mounted) return;
+    setState(() {
+      _logado = false;
+      _nome = '';
+      _codigo = '';
+      _admin = false;
+      _precisaTrocarSenha = false;
+    });
+  }
+
+  Future<void> _marcarSenhaAtualizada() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kPrefsTrocaSenha, false);
+    if (!mounted) return;
+    setState(() {
+      _precisaTrocarSenha = false;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     if (!_sessaoCarregada) {
-      return Scaffold(
-        backgroundColor: _kBackground,
-        body: Center(
-          child: SizedBox(
-            width: 32,
-            height: 32,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: _kGrayText,
-            ),
-          ),
-        ),
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
       );
     }
-    if (_logado) {
-      return PontoPage(nome: _nome, codigo: _codigo);
+    if (!_logado) {
+      return LoginPage(onLogin: _onLogin);
     }
-    return LoginPage(onLogin: _onLogin);
+    if (_admin) {
+      return AdminPage(nome: _nome, codigo: _codigo, onLogout: _logout);
+    }
+    if (_precisaTrocarSenha) {
+      return ChangePasswordPage(
+        onSenhaAtualizada: _marcarSenhaAtualizada,
+        onLogout: _logout,
+      );
+    }
+    return PontoPage(nome: _nome, codigo: _codigo, onLogout: _logout);
   }
 }
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key, required this.onLogin});
 
-  final Future<void> Function(String nome, String codigo) onLogin;
+  final Future<void> Function({
+    required String nome,
+    required String codigo,
+    required bool admin,
+    required bool precisaTrocarSenha,
+  }) onLogin;
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -127,36 +191,165 @@ class LoginPage extends StatefulWidget {
 class _LoginPageState extends State<LoginPage> {
   final _nomeController = TextEditingController();
   final _codigoController = TextEditingController();
+  final _senhaController = TextEditingController();
+  bool _entrando = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _codigoController.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
   void dispose() {
     _nomeController.dispose();
     _codigoController.dispose();
+    _senhaController.dispose();
     super.dispose();
   }
 
-  void _entrar() {
+  Future<void> _entrar() async {
+    if (_entrando) return;
+
     final nome = _nomeController.text.trim();
     final codigo = _codigoController.text.trim();
-    if (nome.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Informe o nome'),
-          backgroundColor: Colors.orange,
-        ),
-      );
+    final senha = _senhaController.text;
+
+    if (nome.isEmpty || codigo.isEmpty || senha.isEmpty) {
+      _showMessage('Informe nome, matrícula e senha', Colors.orange);
       return;
     }
-    if (codigo.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Informe o código de matrícula'),
-          backgroundColor: Colors.orange,
-        ),
+
+    setState(() => _entrando = true);
+    try {
+      final isAdmin = _isSenhaAdmin(senha);
+      var precisaTrocarSenha = false;
+      if (isAdmin) {
+        await _loginAdminPorMatricula(codigo, senha);
+        precisaTrocarSenha = senha == _senhaInicialAdmin;
+      } else {
+        await _loginFuncionario(codigo, senha);
+        precisaTrocarSenha = senha == _senhaInicialFuncionario;
+      }
+      await widget.onLogin(
+        nome: nome,
+        codigo: codigo,
+        admin: isAdmin,
+        precisaTrocarSenha: precisaTrocarSenha,
       );
-      return;
+    } catch (e) {
+      if (mounted) _showMessage(e.toString().replaceFirst('Exception: ', ''), Colors.red);
+    } finally {
+      if (mounted) setState(() => _entrando = false);
     }
-    widget.onLogin(nome, codigo);
+  }
+
+  bool _isSenhaAdmin(String senha) => senha.toLowerCase().endsWith('admin');
+
+  Future<void> _loginFuncionario(String codigo, String senha) async {
+    final email = _emailFuncionario(codigo);
+    final local = email.split('@').first;
+    if (local.isEmpty) {
+      throw Exception('Matrícula inválida para gerar o login.');
+    }
+
+    try {
+      await FirebaseAuth.instance
+          .signInWithEmailAndPassword(email: email, password: senha)
+          .timeout(_authTimeout);
+      return;
+    } on TimeoutException {
+      throw Exception('Tempo excedido no login.');
+    } on FirebaseAuthException catch (e) {
+      if (senha != _senhaInicialFuncionario) {
+        throw Exception(_traduzErroAuth(e));
+      }
+      if (e.code == 'too-many-requests' ||
+          e.code == 'invalid-email' ||
+          e.code == 'operation-not-allowed' ||
+          e.code == 'user-disabled') {
+        throw Exception(_traduzErroAuth(e));
+      }
+      // Primeiro acesso: senha inicial — tenta criar o usuário automaticamente.
+      try {
+        await FirebaseAuth.instance
+            .createUserWithEmailAndPassword(email: email, password: senha)
+            .timeout(_authTimeout);
+      } on FirebaseAuthException catch (e2) {
+        if (e2.code == 'email-already-in-use') {
+          throw Exception(
+            'Senha incorreta. Se já alterou a senha no primeiro acesso, use a nova.',
+          );
+        }
+        if (e2.code == 'weak-password') {
+          throw Exception('A senha inicial não atende ao requisito mínimo do Firebase.');
+        }
+        throw Exception(_traduzErroAuth(e2));
+      } on TimeoutException {
+        throw Exception('Tempo excedido ao criar a conta.');
+      }
+    }
+  }
+
+  Future<void> _loginAdminPorMatricula(String codigo, String senha) async {
+    final email = _emailFuncionario(codigo);
+    try {
+      final cred = await FirebaseAuth.instance
+          .signInWithEmailAndPassword(email: email, password: senha)
+          .timeout(_authTimeout);
+      if (cred.user == null) throw Exception('Falha ao autenticar administrador.');
+    } on FirebaseAuthException catch (e) {
+      if (senha != _senhaInicialAdmin) {
+        throw Exception(_traduzErroAuth(e));
+      }
+      if (e.code == 'too-many-requests' ||
+          e.code == 'invalid-email' ||
+          e.code == 'operation-not-allowed' ||
+          e.code == 'user-disabled') {
+        throw Exception(_traduzErroAuth(e));
+      }
+      try {
+        await FirebaseAuth.instance
+            .createUserWithEmailAndPassword(email: email, password: senha)
+            .timeout(_authTimeout);
+      } on FirebaseAuthException catch (e2) {
+        if (e2.code == 'email-already-in-use') {
+          throw Exception('Senha de administrador incorreta.');
+        }
+        throw Exception(_traduzErroAuth(e2));
+      }
+    } on TimeoutException {
+      throw Exception('Tempo excedido no login do administrador.');
+    }
+  }
+
+  String _traduzErroAuth(FirebaseAuthException e) {
+    switch (e.code) {
+      case 'invalid-email':
+        return 'Email inválido.';
+      case 'invalid-credential':
+      case 'wrong-password':
+      case 'user-not-found':
+        return 'Credenciais inválidas.';
+      case 'too-many-requests':
+        return 'Muitas tentativas. Tente novamente em instantes.';
+      default:
+        return 'Falha no login: ${e.message ?? e.code}';
+    }
+  }
+
+  String _emailFuncionario(String matricula) {
+    final clean = matricula.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '');
+    // Domínio sintético com TLD reconhecido (evita falha de validação do Auth).
+    return '${clean.toLowerCase()}@ponto.app';
+  }
+
+  void _showMessage(String text, Color color) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(text), backgroundColor: color),
+    );
   }
 
   @override
@@ -167,125 +360,121 @@ class _LoginPageState extends State<LoginPage> {
         child: Center(
           child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(horizontal: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Campos Nome e Matrícula centralizados
-                SizedBox(
-                  width: 280,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      TextField(
-                        controller: _nomeController,
-                        style: GoogleFonts.dmSans(
-                          fontWeight: FontWeight.w600,
-                          color: _kGrayText,
-                          fontSize: 16,
-                        ),
-                        decoration: InputDecoration(
-                          labelText: 'Nome',
-                          labelStyle: GoogleFonts.dmSans(
-                            fontWeight: FontWeight.w600,
-                            color: _kGrayText.withValues(alpha: 0.8),
-                          ),
-                          enabledBorder: UnderlineInputBorder(
-                            borderSide: BorderSide(color: _kGrayBorder.withValues(alpha: 0.5)),
-                          ),
-                          focusedBorder: const UnderlineInputBorder(
-                            borderSide: BorderSide(color: _kGrayBorder),
-                          ),
-                        ),
-                        textCapitalization: TextCapitalization.words,
-                        onSubmitted: (_) => _entrar(),
-                      ),
-                      const SizedBox(height: 24),
-                      TextField(
-                        controller: _codigoController,
-                        style: GoogleFonts.dmSans(
-                          fontWeight: FontWeight.w600,
-                          color: _kGrayText,
-                          fontSize: 16,
-                        ),
-                        decoration: InputDecoration(
-                          labelText: 'Matrícula',
-                          labelStyle: GoogleFonts.dmSans(
-                            fontWeight: FontWeight.w600,
-                            color: _kGrayText.withValues(alpha: 0.8),
-                          ),
-                          enabledBorder: UnderlineInputBorder(
-                            borderSide: BorderSide(color: _kGrayBorder.withValues(alpha: 0.5)),
-                          ),
-                          focusedBorder: const UnderlineInputBorder(
-                            borderSide: BorderSide(color: _kGrayBorder),
-                          ),
-                        ),
-                        keyboardType: TextInputType.number,
-                        onSubmitted: (_) => _entrar(),
-                      ),
-                    ],
+            child: SizedBox(
+              width: 300,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: _nomeController,
+                    style: GoogleFonts.dmSans(color: _kGrayText),
+                    decoration: _inputDecoration('Nome'),
+                    onSubmitted: (_) => _entrar(),
                   ),
-                ),
-                const SizedBox(height: 24),
-                // Botão "LOGIN" quadrado, mesma largura dos campos
-                SizedBox(
-                  width: 280,
-                  height: 52,
-                  child: GestureDetector(
-                    onTap: _entrar,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: _kButtonFill,
-                        border: Border.all(color: _kGrayBorder, width: 1.5),
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        'LOGIN',
-                        style: GoogleFonts.dmSans(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                          color: _kGrayText,
+                  const SizedBox(height: 20),
+                  TextField(
+                    controller: _codigoController,
+                    keyboardType: TextInputType.number,
+                    style: GoogleFonts.dmSans(color: _kGrayText),
+                    decoration: _inputDecoration('Matrícula'),
+                    onSubmitted: (_) => _entrar(),
+                  ),
+                  if (_codigoController.text.trim().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Conta Firebase: ${_emailFuncionario(_codigoController.text.trim())}',
+                          style: GoogleFonts.dmSans(
+                            fontSize: 11,
+                            color: _kGrayText.withValues(alpha: 0.65),
+                          ),
                         ),
                       ),
                     ),
+                  const SizedBox(height: 20),
+                  TextField(
+                    controller: _senhaController,
+                    obscureText: true,
+                    style: GoogleFonts.dmSans(color: _kGrayText),
+                    decoration: _inputDecoration('Senha (termine com "admin" para perfil admin)'),
+                    onSubmitted: (_) => _entrar(),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 24),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 52,
+                    child: FilledButton(
+                      onPressed: _entrando ? null : _entrar,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: _kButtonFill,
+                        side: const BorderSide(color: _kGrayBorder, width: 1.2),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                      child: _entrando
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Text(
+                              'LOGIN',
+                              style: GoogleFonts.dmSans(
+                                fontSize: 18,
+                                color: _kGrayText,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
       ),
     );
   }
+
+  InputDecoration _inputDecoration(String label) {
+    return InputDecoration(
+      labelText: label,
+      labelStyle: GoogleFonts.dmSans(color: _kGrayText.withValues(alpha: 0.8)),
+      enabledBorder: UnderlineInputBorder(
+        borderSide: BorderSide(color: _kGrayBorder.withValues(alpha: 0.5)),
+      ),
+      focusedBorder: const UnderlineInputBorder(
+        borderSide: BorderSide(color: _kGrayBorder),
+      ),
+    );
+  }
 }
 
 class PontoPage extends StatefulWidget {
-  const PontoPage({super.key, required this.nome, required this.codigo});
+  const PontoPage({
+    super.key,
+    required this.nome,
+    required this.codigo,
+    required this.onLogout,
+  });
 
   final String nome;
   final String codigo;
+  final Future<void> Function() onLogout;
 
   @override
   State<PontoPage> createState() => _PontoPageState();
 }
 
-/// Intervalo mínimo entre ENTRAR e SAIR (e vice-versa).
-const _minutosEntreRegistros = 10;
-
 class _PontoPageState extends State<PontoPage> {
   bool _estaDentro = false;
   bool _carregando = false;
-  bool _carregandoInicial = true; // evita mostrar estado errado antes de carregar prefs
-  String? _ultimaData;
-  String? _ultimoTipo;
   DateTime? _ultimoTimestamp;
-
-  // Cole aqui a URL do seu Google Apps Script (veja SETUP.md)
-  static const _urlScript =
-      'https://script.google.com/macros/s/AKfycbwNeSWsxvEHCCv_rP6LWeu7ZAg4CdJ9u7RazcZm0IXAaU1Q3NAbeG1JnuVvfy9yACX5/exec';
-
-  /// Chave de preferências por matrícula (identificador único). A planilha continua recebendo o nome em 'profissional'.
-  String get _prefsKey => 'ponto_${widget.codigo}';
+  String? _ultimoTipo;
+  String? _ultimaData;
 
   @override
   void initState() {
@@ -294,150 +483,242 @@ class _PontoPageState extends State<PontoPage> {
   }
 
   Future<void> _carregarUltimoPonto() async {
-    final prefs = await SharedPreferences.getInstance();
-    final data = prefs.getString('${_prefsKey}_lastDate');
-    final tipo = prefs.getString('${_prefsKey}_lastType');
-    final ts = prefs.getInt('${_prefsKey}_lastTimestamp');
-    if (mounted) {
-      setState(() {
-        _ultimaData = data;
-        _ultimoTipo = tipo;
-        _ultimoTimestamp = ts != null ? DateTime.fromMillisecondsSinceEpoch(ts) : null;
-        _estaDentro = tipo == 'ENTRAR';
-        _carregandoInicial = false;
-      });
-    }
-  }
-
-  Future<void> _salvarUltimoPonto(String data, String tipo, DateTime timestamp) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('${_prefsKey}_lastDate', data);
-    await prefs.setString('${_prefsKey}_lastType', tipo);
-    await prefs.setInt('${_prefsKey}_lastTimestamp', timestamp.millisecondsSinceEpoch);
-  }
-
-  /// Retorna (sucesso, mensagemDeErro). O script da planilha devolve HTTP 200 mesmo quando falha; é preciso checar o body.
-  Future<(bool, String?)> _enviarParaPlanilha(String tipo, String dataStr, String horaStr) async {
-    final body = jsonEncode({
-      'matricula': widget.codigo,
-      'profissional': widget.nome,
-      'tipo': tipo,
-      'data': dataStr,
-      'hora': horaStr,
-    });
-    final response = await http.post(
-      Uri.parse(_urlScript),
-      headers: {'Content-Type': 'text/plain'},
-      body: body,
-    ).timeout(const Duration(seconds: 10));
-
-    if (response.statusCode < 200 || response.statusCode >= 400) {
-      return (false, 'HTTP ${response.statusCode}');
-    }
     try {
-      final json = jsonDecode(response.body) as Map<String, dynamic>?;
-      final ok = json?['ok'] == true;
-      final erro = json?['erro']?.toString();
-      return (ok, ok ? null : (erro ?? 'Resposta inválida da planilha'));
-    } catch (_) {
-      return (false, 'Resposta inválida da planilha');
+      // Só `where` em um campo: não exige índice composto. Ordenação no cliente.
+      final snapshot = await FirebaseFirestore.instance
+          .collection('pontos')
+          .where('matricula', isEqualTo: widget.codigo)
+          .get()
+          .timeout(_firestoreTimeout);
+
+      if (!mounted) return;
+      if (snapshot.docs.isEmpty) {
+        setState(() {});
+        return;
+      }
+
+      QueryDocumentSnapshot<Map<String, dynamic>>? latestDoc;
+      DateTime? latestDt;
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final ts = data['timestamp'];
+        final dt = ts is Timestamp ? ts.toDate() : null;
+        if (dt == null) continue;
+        if (latestDt == null || dt.isAfter(latestDt)) {
+          latestDt = dt;
+          latestDoc = doc;
+        }
+      }
+      if (latestDoc == null) {
+        setState(() {});
+        return;
+      }
+
+      final data = latestDoc.data();
+      final ts = data['timestamp'];
+      final tipo = data['tipo'] as String?;
+      final dataStr = data['data'] as String?;
+      final dt = ts is Timestamp ? ts.toDate() : null;
+
+      setState(() {
+        _ultimoTimestamp = dt;
+        _ultimoTipo = tipo;
+        _ultimaData = dataStr;
+        _estaDentro = tipo == 'ENTRAR';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      _showMessage('Falha ao carregar último ponto: $e', Colors.orange);
     }
   }
 
   Future<void> _registrar(String tipo) async {
     final agora = DateTime.now();
-
-    // Só pode dar saída 10 min depois da entrada, e vice-versa
     if (_ultimoTimestamp != null) {
       final diff = agora.difference(_ultimoTimestamp!);
       if (diff.inMinutes < _minutosEntreRegistros) {
         final restante = _minutosEntreRegistros - diff.inMinutes;
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Aguarde $restante minuto(s) entre entrada e saída.'),
-              backgroundColor: Colors.orange,
-            ),
-          );
-        }
+        _showMessage(
+          'Aguarde $restante minuto(s) entre entrada e saída.',
+          Colors.orange,
+        );
         return;
       }
     }
+
+    final dataStr =
+        '${agora.day.toString().padLeft(2, '0')}/${agora.month.toString().padLeft(2, '0')}/${agora.year}';
+    final horaStr =
+        '${agora.hour.toString().padLeft(2, '0')}:${agora.minute.toString().padLeft(2, '0')}:${agora.second.toString().padLeft(2, '0')}';
 
     setState(() {
       _carregando = true;
       _estaDentro = !_estaDentro;
     });
 
-    final dataStr = '${agora.day.toString().padLeft(2, '0')}/${agora.month.toString().padLeft(2, '0')}/${agora.year}';
-    final horaStr = '${agora.hour.toString().padLeft(2, '0')}:${agora.minute.toString().padLeft(2, '0')}:${agora.second.toString().padLeft(2, '0')}';
-
     try {
-      // Se virou o dia e o último foi ENTRAR sem SAIR, registra SAIR "Não informado" no dia anterior
-      if (_ultimaData != null &&
-          _ultimaData != dataStr &&
-          _ultimoTipo == 'ENTRAR') {
-        final (okSairAnterior, msgSair) = await _enviarParaPlanilha('SAIR', _ultimaData!, 'Não informado');
-        if (!okSairAnterior) {
-          setState(() => _estaDentro = !_estaDentro);
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(msgSair ?? 'Erro ao registrar saída do dia anterior.'),
-                backgroundColor: Colors.red,
-              ),
-            );
-          }
-          return;
-        }
-      }
-
-      final (sucesso, msgErro) = await _enviarParaPlanilha(tipo, dataStr, horaStr);
-
-      if (sucesso) {
-        await _salvarUltimoPonto(dataStr, tipo, agora);
-        if (mounted) {
-          setState(() {
-            _ultimaData = dataStr;
-            _ultimoTipo = tipo;
-            _ultimoTimestamp = agora;
-          });
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('$tipo registrado às $horaStr')),
+      await (() async {
+        // Se virou o dia e havia entrada sem saída, cria saída automática.
+        if (_ultimaData != null && _ultimaData != dataStr && _ultimoTipo == 'ENTRAR') {
+          await _savePonto(
+            tipo: 'SAIR',
+            data: _ultimaData!,
+            hora: 'Não informado',
+            timestamp: agora.subtract(const Duration(days: 1)),
           );
         }
-      } else {
-        setState(() => _estaDentro = !_estaDentro);
-        debugPrint('Planilha: $msgErro');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(msgErro ?? 'Erro ao enviar. Verifique a URL do script no SETUP.md.'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      }
-    } catch (e, stack) {
-      setState(() => _estaDentro = !_estaDentro);
-      debugPrint('Erro ao enviar: $e');
-      debugPrint(stack.toString());
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Erro: $e'),
-            backgroundColor: Colors.red,
-          ),
+
+        await _savePonto(
+          tipo: tipo,
+          data: dataStr,
+          hora: horaStr,
+          timestamp: agora,
         );
-      }
+      })().timeout(_registroTimeout);
+
+      if (!mounted) return;
+      setState(() {
+        _ultimoTipo = tipo;
+        _ultimaData = dataStr;
+        _ultimoTimestamp = agora;
+      });
+      _showMessage('$tipo registrado às $horaStr', Colors.green);
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() => _estaDentro = !_estaDentro);
+      _showMessage(
+        'Tempo excedido ao salvar no Firebase. Verifique regras/index/rede.',
+        Colors.red,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _estaDentro = !_estaDentro);
+      _showMessage('Erro ao registrar: $e', Colors.red);
     } finally {
-      if (mounted) setState(() => _carregando = false);
+      if (mounted) {
+        setState(() => _carregando = false);
+      }
     }
   }
 
-  void _aoClicar() {
-    if (_carregando) return;
-    _registrar(_estaDentro ? 'SAIR' : 'ENTRAR');
+  Future<void> _savePonto({
+    required String tipo,
+    required String data,
+    required String hora,
+    required DateTime timestamp,
+  }) async {
+    await FirebaseFirestore.instance.collection('pontos').add({
+      'nome': widget.nome,
+      'matricula': widget.codigo,
+      'tipo': tipo,
+      'data': data,
+      'hora': hora,
+      'timestamp': Timestamp.fromDate(timestamp),
+      'createdAt': FieldValue.serverTimestamp(),
+    }).timeout(_firestoreTimeout);
+  }
+
+  Future<void> _abrirDialogSolicitacaoCorrecao() async {
+    final dataController = TextEditingController(text: _ultimaData ?? '');
+    final horaController = TextEditingController();
+    final justificativaController = TextEditingController();
+    String tipo = _ultimoTipo == 'SAIR' ? 'SAIR' : 'ENTRAR';
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            return AlertDialog(
+              title: const Text('Solicitar correção de ponto'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    DropdownButtonFormField<String>(
+                      value: tipo,
+                      items: const [
+                        DropdownMenuItem(value: 'ENTRAR', child: Text('ENTRAR')),
+                        DropdownMenuItem(value: 'SAIR', child: Text('SAIR')),
+                      ],
+                      onChanged: (value) {
+                        if (value != null) setStateDialog(() => tipo = value);
+                      },
+                      decoration: const InputDecoration(labelText: 'Tipo correto'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: dataController,
+                      decoration: const InputDecoration(labelText: 'Data (dd/MM/yyyy)'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: horaController,
+                      decoration: const InputDecoration(labelText: 'Hora (HH:mm:ss)'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: justificativaController,
+                      minLines: 3,
+                      maxLines: 5,
+                      decoration: const InputDecoration(
+                        labelText: 'Justificativa (obrigatória)',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancelar'),
+                ),
+                FilledButton(
+                  onPressed: () async {
+                    final justificativa = justificativaController.text.trim();
+                    if (justificativa.isEmpty) {
+                      _showMessage('A justificativa é obrigatória.', Colors.orange);
+                      return;
+                    }
+
+                    try {
+                      await FirebaseFirestore.instance.collection('solicitacoes_correcao').add({
+                        'nome': widget.nome,
+                        'matricula': widget.codigo,
+                        'status': 'pendente',
+                        'justificativa': justificativa,
+                        'tipoSolicitado': tipo,
+                        'dataSolicitada': dataController.text.trim(),
+                        'horaSolicitada': horaController.text.trim(),
+                        'ultimoTipoRegistrado': _ultimoTipo ?? '',
+                        'ultimaDataRegistrada': _ultimaData ?? '',
+                        'createdAt': FieldValue.serverTimestamp(),
+                      }).timeout(_firestoreTimeout);
+
+                      if (!mounted) return;
+                      Navigator.of(context).pop();
+                      _showMessage('Solicitação enviada para aprovação do admin.', Colors.green);
+                    } catch (e) {
+                      _showMessage('Falha ao enviar solicitação: $e', Colors.red);
+                    }
+                  },
+                  child: const Text('Enviar solicitação'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    dataController.dispose();
+    horaController.dispose();
+    justificativaController.dispose();
+  }
+
+  void _showMessage(String text, Color color) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(text), backgroundColor: color),
+    );
   }
 
   @override
@@ -448,14 +729,23 @@ class _PontoPageState extends State<PontoPage> {
 
     return Scaffold(
       backgroundColor: _kBackground,
+      appBar: AppBar(
+        title: const Text('Registro de Ponto'),
+        actions: [
+          IconButton(
+            onPressed: _carregando ? null : widget.onLogout,
+            icon: const Icon(Icons.logout),
+            tooltip: 'Sair',
+          ),
+        ],
+      ),
       body: SafeArea(
         child: Column(
           children: [
             const Spacer(flex: 2),
-            // Botão circular central (Entrar = cinza, Sair = azul)
             Center(
               child: GestureDetector(
-                onTap: (_carregando || _carregandoInicial) ? null : _aoClicar,
+                onTap: _carregando ? null : () => _registrar(_estaDentro ? 'SAIR' : 'ENTRAR'),
                 child: Container(
                   width: 200,
                   height: 200,
@@ -463,12 +753,12 @@ class _PontoPageState extends State<PontoPage> {
                     shape: BoxShape.circle,
                     color: _kBackground,
                     border: Border.all(
-                      color: (_carregando || _carregandoInicial) ? _kGrayBorder : borderColor,
+                      color: _carregando ? _kGrayBorder : borderColor,
                       width: isSair ? 2.5 : 1.5,
                     ),
                   ),
                   alignment: Alignment.center,
-                  child: (_carregando || _carregandoInicial)
+                  child: _carregando
                       ? SizedBox(
                           width: 28,
                           height: 28,
@@ -489,7 +779,18 @@ class _PontoPageState extends State<PontoPage> {
               ),
             ),
             const Spacer(flex: 2),
-            // Nome e Matrícula na parte inferior
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _carregando ? null : _abrirDialogSolicitacaoCorrecao,
+                  icon: const Icon(Icons.edit_note),
+                  label: const Text('Solicitar correção de ponto'),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
             Padding(
               padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
               child: Column(
@@ -515,6 +816,475 @@ class _PontoPageState extends State<PontoPage> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class AdminPage extends StatelessWidget {
+  const AdminPage({
+    super.key,
+    required this.nome,
+    required this.codigo,
+    required this.onLogout,
+  });
+
+  final String nome;
+  final String codigo;
+  final Future<void> Function() onLogout;
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> _streamPontos() {
+    return FirebaseFirestore.instance
+        .collection('pontos')
+        .orderBy('timestamp', descending: true)
+        .limit(500)
+        .snapshots();
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> _streamSolicitacoesPendentes() {
+    return FirebaseFirestore.instance
+        .collection('solicitacoes_correcao')
+        .where('status', isEqualTo: 'pendente')
+        .limit(100)
+        .snapshots();
+  }
+
+  Future<void> _aprovarSolicitacao({
+    required BuildContext context,
+    required String solicitacaoId,
+  }) async {
+    try {
+      await FirebaseFirestore.instance
+          .collection('solicitacoes_correcao')
+          .doc(solicitacaoId)
+          .update({
+            'status': 'aprovada',
+            'decisaoPor': '$nome ($codigo)',
+            'decisaoEm': FieldValue.serverTimestamp(),
+          })
+          .timeout(_firestoreTimeout);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Solicitação aprovada.')),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Falha ao aprovar: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _rejeitarSolicitacao({
+    required BuildContext context,
+    required String solicitacaoId,
+  }) async {
+    final controller = TextEditingController();
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Rejeitar solicitação'),
+          content: TextField(
+            controller: controller,
+            minLines: 2,
+            maxLines: 4,
+            decoration: const InputDecoration(
+              labelText: 'Motivo da rejeição (obrigatório)',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final motivo = controller.text.trim();
+                if (motivo.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Informe o motivo da rejeição.'),
+                      backgroundColor: Colors.orange,
+                    ),
+                  );
+                  return;
+                }
+                try {
+                  await FirebaseFirestore.instance
+                      .collection('solicitacoes_correcao')
+                      .doc(solicitacaoId)
+                      .update({
+                        'status': 'rejeitada',
+                        'motivoRejeicao': motivo,
+                        'decisaoPor': '$nome ($codigo)',
+                        'decisaoEm': FieldValue.serverTimestamp(),
+                      })
+                      .timeout(_firestoreTimeout);
+                  if (!dialogContext.mounted) return;
+                  Navigator.of(dialogContext).pop();
+                } catch (e) {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Falha ao rejeitar: $e'), backgroundColor: Colors.red),
+                  );
+                }
+              },
+              child: const Text('Rejeitar'),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+  }
+
+  Future<void> _exportarCsv(BuildContext context, String nomeArquivo) async {
+    final query = await FirebaseFirestore.instance
+        .collection('pontos')
+        .orderBy('timestamp')
+        .get()
+        .timeout(_firestoreTimeout);
+
+    final buffer = StringBuffer()
+      ..writeln('nome,matricula,tipo,data,hora');
+    for (final doc in query.docs) {
+      final d = doc.data();
+      buffer.writeln(
+        '${_csv(d['nome'])},${_csv(d['matricula'])},${_csv(d['tipo'])},${_csv(d['data'])},${_csv(d['hora'])}',
+      );
+    }
+
+    final bytes = Uint8List.fromList(buffer.toString().codeUnits);
+    final params = ShareParams(
+      files: [XFile.fromData(bytes, mimeType: 'text/csv', name: nomeArquivo)],
+      text: 'Exportação de pontos',
+      subject: 'Pontos',
+    );
+    await SharePlus.instance.share(params);
+
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Arquivo CSV gerado com sucesso.')),
+    );
+  }
+
+  String _csv(dynamic value) {
+    final raw = (value ?? '').toString().replaceAll('"', '""');
+    return '"$raw"';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _kBackground,
+      appBar: AppBar(
+        title: const Text('Administrador'),
+        actions: [
+          IconButton(
+            onPressed: onLogout,
+            icon: const Icon(Icons.logout),
+            tooltip: 'Sair',
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Text(
+                  '$nome ($codigo)',
+                  style: GoogleFonts.dmSans(
+                    fontSize: 14,
+                    color: _kGrayText,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: () => _exportarCsv(context, 'pontos_excel.csv'),
+                        icon: const Icon(Icons.table_chart),
+                        label: const Text('Exportar Excel'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: () => _exportarCsv(context, 'pontos_google_sheets.csv'),
+                        icon: const Icon(Icons.cloud_upload),
+                        label: const Text('Exportar Google Sheets'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _streamSolicitacoesPendentes(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Text(
+                      'Erro ao carregar solicitações: ${snapshot.error}',
+                      style: GoogleFonts.dmSans(color: Colors.red),
+                    ),
+                  );
+                }
+                final docs = [...(snapshot.data?.docs ?? [])]
+                  ..sort((a, b) {
+                    final aTs = a.data()['createdAt'];
+                    final bTs = b.data()['createdAt'];
+                    final aDt = aTs is Timestamp ? aTs.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+                    final bDt = bTs is Timestamp ? bTs.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+                    return bDt.compareTo(aDt);
+                  });
+                if (docs.isEmpty) {
+                  return Center(
+                    child: Text(
+                      'Sem solicitações pendentes.',
+                      style: GoogleFonts.dmSans(color: _kGrayText),
+                    ),
+                  );
+                }
+                return ListView.separated(
+                  itemCount: docs.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final doc = docs[index];
+                    final d = doc.data();
+                    return ListTile(
+                      title: Text(
+                        '${d['nome'] ?? ''} (${d['matricula'] ?? ''})',
+                        style: GoogleFonts.dmSans(fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: Text(
+                        'Solicitado: ${d['tipoSolicitado'] ?? '-'} ${d['dataSolicitada'] ?? ''} ${d['horaSolicitada'] ?? ''}\nJustificativa: ${d['justificativa'] ?? ''}',
+                        style: GoogleFonts.dmSans(color: _kGrayText),
+                      ),
+                      isThreeLine: true,
+                      trailing: Wrap(
+                        spacing: 6,
+                        children: [
+                          IconButton(
+                            tooltip: 'Aprovar',
+                            onPressed: () => _aprovarSolicitacao(
+                              context: context,
+                              solicitacaoId: doc.id,
+                            ),
+                            icon: const Icon(Icons.check_circle, color: Colors.green),
+                          ),
+                          IconButton(
+                            tooltip: 'Rejeitar',
+                            onPressed: () => _rejeitarSolicitacao(
+                              context: context,
+                              solicitacaoId: doc.id,
+                            ),
+                            icon: const Icon(Icons.cancel, color: Colors.red),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _streamPontos(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Text(
+                      'Erro ao carregar pontos: ${snapshot.error}',
+                      style: GoogleFonts.dmSans(color: Colors.red),
+                    ),
+                  );
+                }
+                final docs = snapshot.data?.docs ?? [];
+                if (docs.isEmpty) {
+                  return Center(
+                    child: Text(
+                      'Nenhum ponto registrado.',
+                      style: GoogleFonts.dmSans(color: _kGrayText),
+                    ),
+                  );
+                }
+
+                return ListView.separated(
+                  itemCount: docs.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final d = docs[index].data();
+                    final nome = d['nome'] ?? '';
+                    final matricula = d['matricula'] ?? '';
+                    final tipo = d['tipo'] ?? '';
+                    final data = d['data'] ?? '';
+                    final hora = d['hora'] ?? '';
+                    return ListTile(
+                      title: Text(
+                        '$nome ($matricula)',
+                        style: GoogleFonts.dmSans(fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: Text(
+                        '$tipo - $data $hora',
+                        style: GoogleFonts.dmSans(color: _kGrayText),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ChangePasswordPage extends StatefulWidget {
+  const ChangePasswordPage({
+    super.key,
+    required this.onSenhaAtualizada,
+    required this.onLogout,
+  });
+
+  final Future<void> Function() onSenhaAtualizada;
+  final Future<void> Function() onLogout;
+
+  @override
+  State<ChangePasswordPage> createState() => _ChangePasswordPageState();
+}
+
+class _ChangePasswordPageState extends State<ChangePasswordPage> {
+  final _novaSenhaController = TextEditingController();
+  final _confirmarSenhaController = TextEditingController();
+  bool _salvando = false;
+
+  @override
+  void dispose() {
+    _novaSenhaController.dispose();
+    _confirmarSenhaController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _salvarNovaSenha() async {
+    if (_salvando) return;
+    final novaSenha = _novaSenhaController.text;
+    final confirmar = _confirmarSenhaController.text;
+
+    if (novaSenha.length < 6) {
+      _showMessage('A nova senha deve ter no mínimo 6 caracteres.', Colors.orange);
+      return;
+    }
+    if (novaSenha != confirmar) {
+      _showMessage('As senhas não conferem.', Colors.orange);
+      return;
+    }
+    if (novaSenha == _senhaInicialFuncionario) {
+      _showMessage('Escolha uma senha diferente da senha inicial.', Colors.orange);
+      return;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      _showMessage('Sessão inválida. Faça login novamente.', Colors.red);
+      await widget.onLogout();
+      return;
+    }
+
+    setState(() => _salvando = true);
+    try {
+      await user.updatePassword(novaSenha).timeout(_authTimeout);
+      await widget.onSenhaAtualizada();
+      if (!mounted) return;
+      _showMessage('Senha atualizada com sucesso.', Colors.green);
+    } on FirebaseAuthException catch (e) {
+      _showMessage('Falha ao atualizar senha: ${e.message ?? e.code}', Colors.red);
+    } on TimeoutException {
+      _showMessage('Tempo excedido ao atualizar senha.', Colors.red);
+    } finally {
+      if (mounted) setState(() => _salvando = false);
+    }
+  }
+
+  void _showMessage(String text, Color color) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(text), backgroundColor: color),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _kBackground,
+      appBar: AppBar(
+        title: const Text('Troca de senha obrigatória'),
+        actions: [
+          IconButton(
+            onPressed: _salvando ? null : widget.onLogout,
+            icon: const Icon(Icons.logout),
+            tooltip: 'Sair',
+          ),
+        ],
+      ),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: SizedBox(
+            width: 320,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'No primeiro acesso, troque a senha padrão para continuar.',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.dmSans(color: _kGrayText),
+                ),
+                const SizedBox(height: 20),
+                TextField(
+                  controller: _novaSenhaController,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: 'Nova senha'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _confirmarSenhaController,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: 'Confirmar nova senha'),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: _salvando ? null : _salvarNovaSenha,
+                    child: _salvando
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('Salvar nova senha'),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

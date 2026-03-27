@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Regra temporária para desenvolvimento enquanto o Auth do app
+    // ainda está em transição para Firebase Authentication.
+    match /pontos/{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
