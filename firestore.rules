@@ -1,9 +1,18 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Regra temporária para desenvolvimento enquanto o Auth do app
-    // ainda está em transição para Firebase Authentication.
+    // Regras temporárias de desenvolvimento (liberadas) para o app funcionar
+    // enquanto o modelo de permissões (admin/funcionário) é consolidado.
     match /pontos/{document=**} {
+      allow read, write: if true;
+    }
+    match /solicitacoes_correcao/{document=**} {
+      allow read, write: if true;
+    }
+    match /seguranca_usuarios/{document=**} {
+      allow read, write: if true;
+    }
+    match /fechamentos/{document=**} {
       allow read, write: if true;
     }
   }

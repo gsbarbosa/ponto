@@ -30,6 +30,7 @@ const _kPrefsTrocaSenha = 'ponto_troca_senha';
 const _senhaInicialFuncionario = 'teatrofeluma';
 const _senhaInicialAdmin = 'teatrofelumaadmin';
 const _kColecaoSegurancaUsuarios = 'seguranca_usuarios';
+const _kColecaoFechamentos = 'fechamentos';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -249,25 +250,11 @@ class _LoginPageState extends State<LoginPage> {
 
   bool _isSenhaAdmin(String senha) => senha.toLowerCase().endsWith('admin');
 
-  Future<bool> _senhaInicialBloqueada(String email) async {
-    final doc = await FirebaseFirestore.instance
-        .collection(_kColecaoSegurancaUsuarios)
-        .doc(email.toLowerCase())
-        .get()
-        .timeout(_firestoreTimeout);
-    return doc.data()?['senhaInicialBloqueada'] == true;
-  }
-
   Future<void> _loginFuncionario(String codigo, String senha) async {
     final email = _emailFuncionario(codigo);
     final local = email.split('@').first;
     if (local.isEmpty) {
       throw Exception('Matrícula inválida para gerar o login.');
-    }
-    if (senha == _senhaInicialFuncionario && await _senhaInicialBloqueada(email)) {
-      throw Exception(
-        'Senha inicial desativada para este usuário. Use a senha nova.',
-      );
     }
 
     try {
@@ -310,11 +297,6 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _loginAdminPorMatricula(String codigo, String senha) async {
     final email = _emailFuncionario(codigo);
-    if (senha == _senhaInicialAdmin && await _senhaInicialBloqueada(email)) {
-      throw Exception(
-        'Senha inicial de admin desativada para este usuário. Use a senha nova.',
-      );
-    }
     try {
       final cred = await FirebaseAuth.instance
           .signInWithEmailAndPassword(email: email, password: senha)
@@ -539,11 +521,14 @@ class PontoPage extends StatefulWidget {
     required this.nome,
     required this.codigo,
     required this.onLogout,
+    this.apenasVolta = false,
   });
 
   final String nome;
   final String codigo;
   final Future<void> Function() onLogout;
+  /// Quando true (ex.: admin abriu a partir do painel), o botão da AppBar só volta à tela anterior.
+  final bool apenasVolta;
 
   @override
   State<PontoPage> createState() => _PontoPageState();
@@ -811,12 +796,21 @@ class _PontoPageState extends State<PontoPage> {
       backgroundColor: _kBackground,
       appBar: AppBar(
         title: const Text('Registro de Ponto'),
+        leading: widget.apenasVolta
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back),
+                tooltip: 'Voltar ao painel',
+                onPressed: _carregando ? null : () => widget.onLogout(),
+              )
+            : null,
+        automaticallyImplyLeading: !widget.apenasVolta,
         actions: [
-          IconButton(
-            onPressed: _carregando ? null : widget.onLogout,
-            icon: const Icon(Icons.logout),
-            tooltip: 'Sair',
-          ),
+          if (!widget.apenasVolta)
+            IconButton(
+              onPressed: _carregando ? null : widget.onLogout,
+              icon: const Icon(Icons.logout),
+              tooltip: 'Sair',
+            ),
         ],
       ),
       body: SafeArea(
@@ -902,6 +896,38 @@ class _PontoPageState extends State<PontoPage> {
   }
 }
 
+/// Uma linha na visão admin: todos os pontos do período/filtro agrupados por matrícula.
+class _ResumoPontoProfissional {
+  _ResumoPontoProfissional({
+    required this.matricula,
+    required this.nome,
+    required this.documentosRecentesPrimeiro,
+  });
+
+  final String matricula;
+  final String nome;
+  final List<QueryDocumentSnapshot<Map<String, dynamic>>> documentosRecentesPrimeiro;
+
+  int get total => documentosRecentesPrimeiro.length;
+
+  Map<String, dynamic>? get _ultimo =>
+      documentosRecentesPrimeiro.isEmpty ? null : documentosRecentesPrimeiro.first.data();
+
+  DateTime? get ultimoTimestamp {
+    final ts = _ultimo?['timestamp'];
+    return ts is Timestamp ? ts.toDate() : null;
+  }
+
+  String get ultimoResumo {
+    final d = _ultimo;
+    if (d == null) return '—';
+    final tipo = d['tipo'] ?? '';
+    final data = d['data'] ?? '';
+    final hora = d['hora'] ?? '';
+    return '$tipo · $data $hora'.trim();
+  }
+}
+
 class AdminPage extends StatefulWidget {
   const AdminPage({
     super.key,
@@ -922,9 +948,16 @@ class _AdminPageState extends State<AdminPage> {
   final _buscaController = TextEditingController();
   String _busca = '';
   String _filtroTipo = 'TODOS';
-  String _filtroPeriodo = '30D';
+  String _filtroPeriodo = 'MES';
   String _filtroFuncionario = 'TODOS';
   String _filtroStatusSolicitacao = 'PENDENTE';
+  String _competencia = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _competencia = _competenciaDeDateTime(DateTime.now());
+  }
 
   @override
   void dispose() {
@@ -932,10 +965,35 @@ class _AdminPageState extends State<AdminPage> {
     super.dispose();
   }
 
+  String _competenciaDeDateTime(DateTime dt) {
+    final y = dt.year.toString().padLeft(4, '0');
+    final m = dt.month.toString().padLeft(2, '0');
+    return '$y-$m';
+  }
+
+  DateTime _inicioCompetencia(String competencia) {
+    final parts = competencia.split('-');
+    final y = int.parse(parts[0]);
+    final m = int.parse(parts[1]);
+    return DateTime(y, m, 1);
+  }
+
+  DateTime _fimCompetenciaExclusivo(String competencia) {
+    final start = _inicioCompetencia(competencia);
+    return DateTime(start.year, start.month + 1, 1);
+  }
+
   Stream<QuerySnapshot<Map<String, dynamic>>> _streamPontos() {
     return FirebaseFirestore.instance
         .collection('pontos')
         .limit(1200)
+        .snapshots();
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> _streamFechamentos() {
+    return FirebaseFirestore.instance
+        .collection(_kColecaoFechamentos)
+        .limit(200)
         .snapshots();
   }
 
@@ -946,11 +1004,110 @@ class _AdminPageState extends State<AdminPage> {
         .snapshots();
   }
 
+  Future<void> _fecharMes(BuildContext context, String competencia) async {
+    try {
+      final start = _inicioCompetencia(competencia);
+      final end = _fimCompetenciaExclusivo(competencia);
+
+      // Conta pontos do mês para gravar no fechamento.
+      final snap = await FirebaseFirestore.instance
+          .collection('pontos')
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+          .where('timestamp', isLessThan: Timestamp.fromDate(end))
+          .get()
+          .timeout(_firestoreTimeout);
+
+      await FirebaseFirestore.instance.collection(_kColecaoFechamentos).doc(competencia).set({
+        'competencia': competencia,
+        'status': 'fechado',
+        'fechadoPor': '${widget.nome} (${widget.codigo})',
+        'fechadoEm': FieldValue.serverTimestamp(),
+        'totalMarcacoes': snap.docs.length,
+      }, SetOptions(merge: true)).timeout(_firestoreTimeout);
+
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Competência $competencia fechada.')),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Falha ao fechar mês: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  DateTime? _parseDataHoraPtBr(String data, String hora) {
+    // data: dd/MM/yyyy
+    // hora: HH:mm:ss (ou HH:mm)
+    try {
+      final parts = data.split('/');
+      if (parts.length != 3) return null;
+      final d = int.parse(parts[0]);
+      final m = int.parse(parts[1]);
+      final y = int.parse(parts[2]);
+
+      final hParts = hora.split(':');
+      if (hParts.length < 2) return null;
+      final hh = int.parse(hParts[0]);
+      final mm = int.parse(hParts[1]);
+      final ss = hParts.length >= 3 ? int.tryParse(hParts[2]) ?? 0 : 0;
+      return DateTime(y, m, d, hh, mm, ss);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String?> _aplicarCorrecaoEmPontos(Map<String, dynamic> s) async {
+    final matricula = (s['matricula'] ?? '').toString().trim();
+    final nome = (s['nome'] ?? '').toString().trim();
+    final tipo = (s['tipoSolicitado'] ?? '').toString().trim();
+    final data = (s['dataSolicitada'] ?? '').toString().trim();
+    final hora = (s['horaSolicitada'] ?? '').toString().trim();
+
+    if (matricula.isEmpty || tipo.isEmpty || data.isEmpty || hora.isEmpty) return null;
+    if (tipo != 'ENTRAR' && tipo != 'SAIR') return null;
+
+    // Se já existe marcação desse tipo no dia, não duplica.
+    final existentes = await FirebaseFirestore.instance
+        .collection('pontos')
+        .where('matricula', isEqualTo: matricula)
+        .where('data', isEqualTo: data)
+        .where('tipo', isEqualTo: tipo)
+        .get()
+        .timeout(_firestoreTimeout);
+    if (existentes.docs.isNotEmpty) {
+      return existentes.docs.first.id;
+    }
+
+    final dt = _parseDataHoraPtBr(data, hora) ?? DateTime.now();
+    final doc = await FirebaseFirestore.instance.collection('pontos').add({
+      'nome': nome,
+      'matricula': matricula,
+      'tipo': tipo,
+      'data': data,
+      'hora': hora,
+      'timestamp': Timestamp.fromDate(dt),
+      'createdAt': FieldValue.serverTimestamp(),
+      'origem': 'correcao_aprovada',
+    }).timeout(_firestoreTimeout);
+    return doc.id;
+  }
+
   Future<void> _aprovarSolicitacao({
     required BuildContext context,
     required String solicitacaoId,
   }) async {
     try {
+      final docRef = FirebaseFirestore.instance
+          .collection('solicitacoes_correcao')
+          .doc(solicitacaoId);
+      final snap = await docRef.get().timeout(_firestoreTimeout);
+      final s = snap.data();
+      if (s == null) throw Exception('Solicitação não encontrada.');
+
+      final pontoId = await _aplicarCorrecaoEmPontos(s);
+
       await FirebaseFirestore.instance
           .collection('solicitacoes_correcao')
           .doc(solicitacaoId)
@@ -958,11 +1115,12 @@ class _AdminPageState extends State<AdminPage> {
             'status': 'aprovada',
             'decisaoPor': '${widget.nome} (${widget.codigo})',
             'decisaoEm': FieldValue.serverTimestamp(),
+            'pontoAplicadoId': pontoId ?? '',
           })
           .timeout(_firestoreTimeout);
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Solicitação aprovada.')),
+        const SnackBar(content: Text('Solicitação aprovada e aplicada no ponto.')),
       );
     } catch (e) {
       if (!context.mounted) return;
@@ -1047,6 +1205,12 @@ class _AdminPageState extends State<AdminPage> {
       inicio = agora.subtract(const Duration(days: 7));
     } else if (_filtroPeriodo == '30D') {
       inicio = agora.subtract(const Duration(days: 30));
+    } else if (_filtroPeriodo == 'MES' && _competencia.isNotEmpty) {
+      inicio = _inicioCompetencia(_competencia);
+    }
+    DateTime? fim;
+    if (_filtroPeriodo == 'MES' && _competencia.isNotEmpty) {
+      fim = _fimCompetenciaExclusivo(_competencia);
     }
 
     final busca = _busca.trim().toLowerCase();
@@ -1063,7 +1227,9 @@ class _AdminPageState extends State<AdminPage> {
           matricula.toLowerCase().contains(busca);
       final okTipo = _filtroTipo == 'TODOS' || tipo == _filtroTipo;
       final okFuncionario = _filtroFuncionario == 'TODOS' || matricula == _filtroFuncionario;
-      final okPeriodo = inicio == null || (dt != null && !dt.isBefore(inicio));
+      final okPeriodoInicio = inicio == null || (dt != null && !dt.isBefore(inicio));
+      final okPeriodoFim = fim == null || (dt != null && dt.isBefore(fim));
+      final okPeriodo = okPeriodoInicio && okPeriodoFim;
       return okBusca && okTipo && okFuncionario && okPeriodo;
     }).toList();
 
@@ -1105,12 +1271,154 @@ class _AdminPageState extends State<AdminPage> {
     return filtrados;
   }
 
+  List<_ResumoPontoProfissional> _resumosPorProfissional(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> pontosFiltrados,
+  ) {
+    final map = <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+    for (final doc in pontosFiltrados) {
+      final m = (doc.data()['matricula'] ?? '').toString().trim();
+      if (m.isEmpty) continue;
+      map.putIfAbsent(m, () => []).add(doc);
+    }
+    final list = <_ResumoPontoProfissional>[];
+    for (final e in map.entries) {
+      final docs = [...e.value];
+      docs.sort((a, b) {
+        final at = a.data()['timestamp'];
+        final bt = b.data()['timestamp'];
+        final ad = at is Timestamp ? at.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+        final bd = bt is Timestamp ? bt.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+        return bd.compareTo(ad);
+      });
+      final nome = (docs.first.data()['nome'] ?? '').toString();
+      list.add(
+        _ResumoPontoProfissional(
+          matricula: e.key,
+          nome: nome,
+          documentosRecentesPrimeiro: docs,
+        ),
+      );
+    }
+    list.sort((a, b) {
+      final at = a.ultimoTimestamp ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bt = b.ultimoTimestamp ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bt.compareTo(at);
+    });
+    return list;
+  }
+
+  Widget _tabelaPontosPorProfissional(List<_ResumoPontoProfissional> resumos) {
+    const minWidth = 640.0;
+    TextStyle cellStyle({bool header = false}) => GoogleFonts.dmSans(
+          fontSize: header ? 12 : 13,
+          fontWeight: header ? FontWeight.w700 : FontWeight.w500,
+          color: header ? _kGrayText : Colors.white,
+        );
+
+    Widget cell(String text, {bool header = false, int flex = 1}) {
+      return Expanded(
+        flex: flex,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+          child: Text(
+            text,
+            style: cellStyle(header: header),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final w = constraints.maxWidth;
+        final viewport = w.isFinite ? w : MediaQuery.sizeOf(context).width;
+        final tableWidth = viewport < minWidth ? minWidth : viewport;
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: minWidth, maxWidth: tableWidth),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    border: Border(
+                      bottom: BorderSide(color: _kGrayBorder.withValues(alpha: 0.4)),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      cell('Profissional', header: true, flex: 3),
+                      cell('Matrícula', header: true, flex: 2),
+                      cell('Última marcação', header: true, flex: 3),
+                      cell('Qtd', header: true, flex: 1),
+                    ],
+                  ),
+                ),
+                ...resumos.map(
+                  (r) => InkWell(
+                    onTap: () => _mostrarDetalheProfissional(context, r),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(color: _kGrayBorder.withValues(alpha: 0.15)),
+                        ),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          cell(r.nome.isEmpty ? '—' : r.nome, flex: 3),
+                          cell(r.matricula, flex: 2),
+                          cell(r.ultimoResumo, flex: 3),
+                          cell('${r.total}', flex: 1),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _mostrarDetalheProfissional(BuildContext context, _ResumoPontoProfissional r) {
+    final linhas = r.documentosRecentesPrimeiro.take(50).map((doc) {
+      final d = doc.data();
+      return '${d['tipo'] ?? ''} · ${d['data'] ?? ''} ${d['hora'] ?? ''}';
+    }).join('\n');
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('${r.nome.isEmpty ? r.matricula : r.nome} (${r.matricula})'),
+        content: SingleChildScrollView(
+          child: SelectableText(
+            linhas.isEmpty ? 'Sem registros.' : linhas,
+            style: GoogleFonts.dmSans(fontSize: 13, color: _kGrayText),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Fechar')),
+        ],
+      ),
+    );
+  }
+
   Future<void> _exportarCsv(BuildContext context, String nomeArquivo) async {
-    final query = await FirebaseFirestore.instance
-        .collection('pontos')
-        .orderBy('timestamp')
-        .get()
-        .timeout(_firestoreTimeout);
+    var ref = FirebaseFirestore.instance.collection('pontos').orderBy('timestamp');
+    if (_competencia.isNotEmpty) {
+      final start = _inicioCompetencia(_competencia);
+      final end = _fimCompetenciaExclusivo(_competencia);
+      ref = ref
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+          .where('timestamp', isLessThan: Timestamp.fromDate(end));
+    }
+    final query = await ref.get().timeout(_firestoreTimeout);
 
     final buffer = StringBuffer()
       ..writeln('nome,matricula,tipo,data,hora');
@@ -1135,9 +1443,113 @@ class _AdminPageState extends State<AdminPage> {
     );
   }
 
+  Future<void> _exportarCsvPorDia(BuildContext context, String nomeArquivo) async {
+    var ref = FirebaseFirestore.instance.collection('pontos').orderBy('timestamp');
+    if (_competencia.isNotEmpty) {
+      final start = _inicioCompetencia(_competencia);
+      final end = _fimCompetenciaExclusivo(_competencia);
+      ref = ref
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+          .where('timestamp', isLessThan: Timestamp.fromDate(end));
+    }
+    final query = await ref.get().timeout(_firestoreTimeout);
+
+    // chave: matricula|data
+    final map = <String, Map<String, dynamic>>{};
+    for (final doc in query.docs) {
+      final d = doc.data();
+      final nome = (d['nome'] ?? '').toString();
+      final matricula = (d['matricula'] ?? '').toString();
+      final tipo = (d['tipo'] ?? '').toString();
+      final data = (d['data'] ?? '').toString();
+      final hora = (d['hora'] ?? '').toString();
+      final ts = d['timestamp'];
+      final dt = ts is Timestamp ? ts.toDate() : null;
+      if (matricula.isEmpty || data.isEmpty) continue;
+
+      final key = '$matricula|$data';
+      map.putIfAbsent(key, () {
+        return {
+          'nome': nome,
+          'matricula': matricula,
+          'data': data,
+          'entrada': '',
+          'saida': '',
+          '_entradaDt': null,
+          '_saidaDt': null,
+        };
+      });
+
+      final row = map[key]!;
+      // Mantém nome mais recente que aparecer.
+      if (nome.isNotEmpty) row['nome'] = nome;
+
+      if (tipo == 'ENTRAR') {
+        final current = row['_entradaDt'] as DateTime?;
+        if (current == null || (dt != null && dt.isBefore(current))) {
+          row['_entradaDt'] = dt ?? current;
+          row['entrada'] = hora;
+        }
+      } else if (tipo == 'SAIR') {
+        final current = row['_saidaDt'] as DateTime?;
+        if (current == null || (dt != null && dt.isAfter(current))) {
+          row['_saidaDt'] = dt ?? current;
+          row['saida'] = hora;
+        }
+      }
+    }
+
+    final rows = map.values.toList();
+    rows.sort((a, b) {
+      final aData = (a['data'] ?? '').toString();
+      final bData = (b['data'] ?? '').toString();
+      final aMat = (a['matricula'] ?? '').toString();
+      final bMat = (b['matricula'] ?? '').toString();
+      final aDt = _parseDataHoraPtBr(aData, '00:00:00') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bDt = _parseDataHoraPtBr(bData, '00:00:00') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final cmp = aDt.compareTo(bDt);
+      return cmp != 0 ? cmp : aMat.compareTo(bMat);
+    });
+
+    final buffer = StringBuffer()..writeln('nome,matricula,data,entrada,saida');
+    for (final r in rows) {
+      buffer.writeln(
+        '${_csv(r['nome'])},${_csv(r['matricula'])},${_csv(r['data'])},${_csv(r['entrada'])},${_csv(r['saida'])}',
+      );
+    }
+
+    final bytes = Uint8List.fromList(buffer.toString().codeUnits);
+    final params = ShareParams(
+      files: [XFile.fromData(bytes, mimeType: 'text/csv', name: nomeArquivo)],
+      text: 'Exportação de pontos (por dia)',
+      subject: 'Pontos (por dia)',
+    );
+    await SharePlus.instance.share(params);
+
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Arquivo CSV (por dia) gerado com sucesso.')),
+    );
+  }
+
   String _csv(dynamic value) {
     final raw = (value ?? '').toString().replaceAll('"', '""');
     return '"$raw"';
+  }
+
+  void _abrirMeuPonto() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (ctx) => PontoPage(
+          nome: widget.nome,
+          codigo: widget.codigo,
+          apenasVolta: true,
+          onLogout: () async {
+            if (ctx.mounted) Navigator.of(ctx).pop();
+          },
+        ),
+      ),
+    );
   }
 
   Widget _kpiCard(String titulo, String valor, {Color? color}) {
@@ -1176,6 +1588,11 @@ class _AdminPageState extends State<AdminPage> {
         title: const Text('Administrador'),
         actions: [
           IconButton(
+            onPressed: _abrirMeuPonto,
+            icon: const Icon(Icons.fingerprint),
+            tooltip: 'Bater meu ponto',
+          ),
+          IconButton(
             onPressed: widget.onLogout,
             icon: const Icon(Icons.logout),
             tooltip: 'Sair',
@@ -1183,35 +1600,49 @@ class _AdminPageState extends State<AdminPage> {
         ],
       ),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: _streamPontos(),
-        builder: (context, pontosSnap) {
+        stream: _streamFechamentos(),
+        builder: (context, fechamentosSnap) {
           return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: _streamSolicitacoes(),
-            builder: (context, solicitacoesSnap) {
-              if (pontosSnap.connectionState == ConnectionState.waiting ||
-                  solicitacoesSnap.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (pontosSnap.hasError) {
-                return Center(
-                  child: Text(
-                    'Erro ao carregar pontos: ${pontosSnap.error}',
-                    style: GoogleFonts.dmSans(color: Colors.red),
-                  ),
-                );
-              }
-              if (solicitacoesSnap.hasError) {
-                return Center(
-                  child: Text(
-                    'Erro ao carregar solicitações: ${solicitacoesSnap.error}',
-                    style: GoogleFonts.dmSans(color: Colors.red),
-                  ),
-                );
-              }
+            stream: _streamPontos(),
+            builder: (context, pontosSnap) {
+              return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: _streamSolicitacoes(),
+                builder: (context, solicitacoesSnap) {
+                  if (fechamentosSnap.connectionState == ConnectionState.waiting ||
+                      pontosSnap.connectionState == ConnectionState.waiting ||
+                      solicitacoesSnap.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (fechamentosSnap.hasError) {
+                    return Center(
+                      child: Text(
+                        'Erro ao carregar fechamentos: ${fechamentosSnap.error}',
+                        style: GoogleFonts.dmSans(color: Colors.red),
+                      ),
+                    );
+                  }
+                  if (pontosSnap.hasError) {
+                    return Center(
+                      child: Text(
+                        'Erro ao carregar pontos: ${pontosSnap.error}',
+                        style: GoogleFonts.dmSans(color: Colors.red),
+                      ),
+                    );
+                  }
+                  if (solicitacoesSnap.hasError) {
+                    return Center(
+                      child: Text(
+                        'Erro ao carregar solicitações: ${solicitacoesSnap.error}',
+                        style: GoogleFonts.dmSans(color: Colors.red),
+                      ),
+                    );
+                  }
 
-              final pontosDocs = pontosSnap.data?.docs ?? [];
-              final solicitacoesDocs = solicitacoesSnap.data?.docs ?? [];
+                  final fechamentosDocs = fechamentosSnap.data?.docs ?? [];
+                  final pontosDocs = pontosSnap.data?.docs ?? [];
+                  final solicitacoesDocs = solicitacoesSnap.data?.docs ?? [];
               final pontosFiltrados = _filtrarPontos(pontosDocs);
+              final resumosProfissionais = _resumosPorProfissional(pontosFiltrados);
               final solicitacoesFiltradas = _filtrarSolicitacoes(solicitacoesDocs);
 
               final funcionarios = <String>{};
@@ -1220,6 +1651,21 @@ class _AdminPageState extends State<AdminPage> {
                 if (m.isNotEmpty) funcionarios.add(m);
               }
               final funcionariosOrdenados = funcionarios.toList()..sort();
+
+              // Competências disponíveis a partir dos timestamps existentes.
+              final competenciasSet = <String>{};
+              for (final p in pontosDocs) {
+                final ts = p.data()['timestamp'];
+                final dt = ts is Timestamp ? ts.toDate() : null;
+                if (dt != null) competenciasSet.add(_competenciaDeDateTime(dt));
+              }
+              final competencias = competenciasSet.toList()..sort();
+              final competenciaAtual = _competenciaDeDateTime(DateTime.now());
+              final competenciaDefault = competencias.contains(competenciaAtual)
+                  ? competenciaAtual
+                  : (competencias.isNotEmpty ? competencias.last : competenciaAtual);
+              final competenciaEfetiva =
+                  competencias.contains(_competencia) ? _competencia : competenciaDefault;
 
               final pendentes = solicitacoesDocs
                   .where((d) => (d.data()['status'] ?? '').toString() == 'pendente')
@@ -1230,6 +1676,15 @@ class _AdminPageState extends State<AdminPage> {
               final totalSaidas = pontosDocs
                   .where((d) => (d.data()['tipo'] ?? '').toString() == 'SAIR')
                   .length;
+
+              Map<String, dynamic>? fechamentoAtual;
+              for (final f in fechamentosDocs) {
+                if (f.id == competenciaEfetiva) {
+                  fechamentoAtual = f.data();
+                  break;
+                }
+              }
+              final isFechado = (fechamentoAtual?['status'] ?? '') == 'fechado';
 
               return ListView(
                 padding: const EdgeInsets.all(16),
@@ -1243,20 +1698,63 @@ class _AdminPageState extends State<AdminPage> {
                     children: [
                       Expanded(
                         child: FilledButton.icon(
-                          onPressed: () => _exportarCsv(context, 'pontos_excel.csv'),
+                          onPressed: () => _exportarCsv(
+                            context,
+                            'pontos_${competenciaEfetiva}_marcacoes.csv',
+                          ),
                           icon: const Icon(Icons.table_chart),
-                          label: const Text('Exportar Excel'),
+                          label: const Text('Exportar marcações'),
                         ),
                       ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: FilledButton.icon(
-                          onPressed: () => _exportarCsv(context, 'pontos_google_sheets.csv'),
+                          onPressed: () => _exportarCsvPorDia(
+                            context,
+                            'pontos_${competenciaEfetiva}_por_dia.csv',
+                          ),
                           icon: const Icon(Icons.cloud_upload),
-                          label: const Text('Exportar Sheets'),
+                          label: const Text('Exportar por dia'),
                         ),
                       ),
                     ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: DropdownMenu<String>(
+                          initialSelection: competenciaEfetiva,
+                          label: const Text('Competência'),
+                          onSelected: (v) => setState(() {
+                            _competencia = v ?? competenciaDefault;
+                            _filtroPeriodo = 'MES';
+                          }),
+                          dropdownMenuEntries: [
+                            if (competencias.isEmpty)
+                              DropdownMenuEntry(value: competenciaEfetiva, label: competenciaEfetiva),
+                            ...competencias.reversed.map(
+                              (c) => DropdownMenuEntry(value: c, label: c),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      FilledButton(
+                        onPressed: isFechado ? null : () => _fecharMes(context, competenciaEfetiva),
+                        child: Text(isFechado ? 'Mês fechado' : 'Fechar mês'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    isFechado
+                        ? 'Status: FECHADO (histórico).'
+                        : 'Status: ABERTO (mês em andamento).',
+                    style: GoogleFonts.dmSans(
+                      fontSize: 11,
+                      color: isFechado ? Colors.orangeAccent : _kGrayText.withValues(alpha: 0.8),
+                    ),
                   ),
                   const SizedBox(height: 14),
                   GridView.count(
@@ -1305,6 +1803,7 @@ class _AdminPageState extends State<AdminPage> {
                           DropdownMenuEntry(value: 'HOJE', label: 'Hoje'),
                           DropdownMenuEntry(value: '7D', label: '7 dias'),
                           DropdownMenuEntry(value: '30D', label: '30 dias'),
+                          DropdownMenuEntry(value: 'MES', label: 'Competência'),
                           DropdownMenuEntry(value: 'TODOS', label: 'Tudo'),
                         ],
                       ),
@@ -1410,32 +1909,26 @@ class _AdminPageState extends State<AdminPage> {
                     }),
                   const SizedBox(height: 16),
                   Text(
-                    'Registros de ponto (${pontosFiltrados.length})',
+                    'Pontos por profissional (${resumosProfissionais.length}) — '
+                    '${pontosFiltrados.length} marcações no filtro',
                     style: GoogleFonts.dmSans(fontSize: 16, fontWeight: FontWeight.w700),
                   ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Uma linha por profissional. Toque na linha para ver até 50 marcações.',
+                    style: GoogleFonts.dmSans(fontSize: 11, color: _kGrayText.withValues(alpha: 0.8)),
+                  ),
                   const SizedBox(height: 8),
-                  if (pontosFiltrados.isEmpty)
+                  if (resumosProfissionais.isEmpty)
                     Text(
                       'Nenhum registro para os filtros atuais.',
                       style: GoogleFonts.dmSans(color: _kGrayText),
                     )
                   else
-                    ...pontosFiltrados.take(300).map((doc) {
-                      final d = doc.data();
-                      return ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(
-                          '${d['nome'] ?? ''} (${d['matricula'] ?? ''})',
-                          style: GoogleFonts.dmSans(fontWeight: FontWeight.w600),
-                        ),
-                        subtitle: Text(
-                          '${d['tipo'] ?? ''} - ${d['data'] ?? ''} ${d['hora'] ?? ''}',
-                          style: GoogleFonts.dmSans(color: _kGrayText),
-                        ),
-                      );
-                    }),
+                    _tabelaPontosPorProfissional(resumosProfissionais.take(200).toList()),
                 ],
+              );
+                },
               );
             },
           );
