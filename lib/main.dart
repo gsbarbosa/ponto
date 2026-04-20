@@ -30,6 +30,7 @@ const _kPrefsTrocaSenha = 'ponto_troca_senha';
 const _senhaInicialFuncionario = 'teatrofeluma';
 const _senhaInicialAdmin = 'teatrofelumaadmin';
 const _kColecaoSegurancaUsuarios = 'seguranca_usuarios';
+// (Reservado) Se quiser reintroduzir fechamentos no futuro.
 const _kColecaoFechamentos = 'fechamentos';
 
 Future<void> main() async {
@@ -983,17 +984,20 @@ class _AdminPageState extends State<AdminPage> {
     return DateTime(start.year, start.month + 1, 1);
   }
 
+  DateTime _fimCompetenciaEfetivoExclusivo(String competencia) {
+    // Se for a competência do mês atual, recorta até "amanhã 00:00" (inclui o dia de hoje).
+    final now = DateTime.now();
+    final atual = _competenciaDeDateTime(now);
+    if (competencia == atual) {
+      return DateTime(now.year, now.month, now.day + 1);
+    }
+    return _fimCompetenciaExclusivo(competencia);
+  }
+
   Stream<QuerySnapshot<Map<String, dynamic>>> _streamPontos() {
     return FirebaseFirestore.instance
         .collection('pontos')
         .limit(1200)
-        .snapshots();
-  }
-
-  Stream<QuerySnapshot<Map<String, dynamic>>> _streamFechamentos() {
-    return FirebaseFirestore.instance
-        .collection(_kColecaoFechamentos)
-        .limit(200)
         .snapshots();
   }
 
@@ -1002,39 +1006,6 @@ class _AdminPageState extends State<AdminPage> {
         .collection('solicitacoes_correcao')
         .limit(800)
         .snapshots();
-  }
-
-  Future<void> _fecharMes(BuildContext context, String competencia) async {
-    try {
-      final start = _inicioCompetencia(competencia);
-      final end = _fimCompetenciaExclusivo(competencia);
-
-      // Conta pontos do mês para gravar no fechamento.
-      final snap = await FirebaseFirestore.instance
-          .collection('pontos')
-          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
-          .where('timestamp', isLessThan: Timestamp.fromDate(end))
-          .get()
-          .timeout(_firestoreTimeout);
-
-      await FirebaseFirestore.instance.collection(_kColecaoFechamentos).doc(competencia).set({
-        'competencia': competencia,
-        'status': 'fechado',
-        'fechadoPor': '${widget.nome} (${widget.codigo})',
-        'fechadoEm': FieldValue.serverTimestamp(),
-        'totalMarcacoes': snap.docs.length,
-      }, SetOptions(merge: true)).timeout(_firestoreTimeout);
-
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Competência $competencia fechada.')),
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Falha ao fechar mês: $e'), backgroundColor: Colors.red),
-      );
-    }
   }
 
   DateTime? _parseDataHoraPtBr(String data, String hora) {
@@ -1210,7 +1181,7 @@ class _AdminPageState extends State<AdminPage> {
     }
     DateTime? fim;
     if (_filtroPeriodo == 'MES' && _competencia.isNotEmpty) {
-      fim = _fimCompetenciaExclusivo(_competencia);
+      fim = _fimCompetenciaEfetivoExclusivo(_competencia);
     }
 
     final busca = _busca.trim().toLowerCase();
@@ -1413,7 +1384,7 @@ class _AdminPageState extends State<AdminPage> {
     var ref = FirebaseFirestore.instance.collection('pontos').orderBy('timestamp');
     if (_competencia.isNotEmpty) {
       final start = _inicioCompetencia(_competencia);
-      final end = _fimCompetenciaExclusivo(_competencia);
+      final end = _fimCompetenciaEfetivoExclusivo(_competencia);
       ref = ref
           .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
           .where('timestamp', isLessThan: Timestamp.fromDate(end));
@@ -1447,7 +1418,7 @@ class _AdminPageState extends State<AdminPage> {
     var ref = FirebaseFirestore.instance.collection('pontos').orderBy('timestamp');
     if (_competencia.isNotEmpty) {
       final start = _inicioCompetencia(_competencia);
-      final end = _fimCompetenciaExclusivo(_competencia);
+      final end = _fimCompetenciaEfetivoExclusivo(_competencia);
       ref = ref
           .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
           .where('timestamp', isLessThan: Timestamp.fromDate(end));
@@ -1600,47 +1571,34 @@ class _AdminPageState extends State<AdminPage> {
         ],
       ),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: _streamFechamentos(),
-        builder: (context, fechamentosSnap) {
+        stream: _streamPontos(),
+        builder: (context, pontosSnap) {
           return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: _streamPontos(),
-            builder: (context, pontosSnap) {
-              return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: _streamSolicitacoes(),
-                builder: (context, solicitacoesSnap) {
-                  if (fechamentosSnap.connectionState == ConnectionState.waiting ||
-                      pontosSnap.connectionState == ConnectionState.waiting ||
-                      solicitacoesSnap.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  if (fechamentosSnap.hasError) {
-                    return Center(
-                      child: Text(
-                        'Erro ao carregar fechamentos: ${fechamentosSnap.error}',
-                        style: GoogleFonts.dmSans(color: Colors.red),
-                      ),
-                    );
-                  }
-                  if (pontosSnap.hasError) {
-                    return Center(
-                      child: Text(
-                        'Erro ao carregar pontos: ${pontosSnap.error}',
-                        style: GoogleFonts.dmSans(color: Colors.red),
-                      ),
-                    );
-                  }
-                  if (solicitacoesSnap.hasError) {
-                    return Center(
-                      child: Text(
-                        'Erro ao carregar solicitações: ${solicitacoesSnap.error}',
-                        style: GoogleFonts.dmSans(color: Colors.red),
-                      ),
-                    );
-                  }
+            stream: _streamSolicitacoes(),
+            builder: (context, solicitacoesSnap) {
+              if (pontosSnap.connectionState == ConnectionState.waiting ||
+                  solicitacoesSnap.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (pontosSnap.hasError) {
+                return Center(
+                  child: Text(
+                    'Erro ao carregar pontos: ${pontosSnap.error}',
+                    style: GoogleFonts.dmSans(color: Colors.red),
+                  ),
+                );
+              }
+              if (solicitacoesSnap.hasError) {
+                return Center(
+                  child: Text(
+                    'Erro ao carregar solicitações: ${solicitacoesSnap.error}',
+                    style: GoogleFonts.dmSans(color: Colors.red),
+                  ),
+                );
+              }
 
-                  final fechamentosDocs = fechamentosSnap.data?.docs ?? [];
-                  final pontosDocs = pontosSnap.data?.docs ?? [];
-                  final solicitacoesDocs = solicitacoesSnap.data?.docs ?? [];
+              final pontosDocs = pontosSnap.data?.docs ?? [];
+              final solicitacoesDocs = solicitacoesSnap.data?.docs ?? [];
               final pontosFiltrados = _filtrarPontos(pontosDocs);
               final resumosProfissionais = _resumosPorProfissional(pontosFiltrados);
               final solicitacoesFiltradas = _filtrarSolicitacoes(solicitacoesDocs);
@@ -1677,14 +1635,7 @@ class _AdminPageState extends State<AdminPage> {
                   .where((d) => (d.data()['tipo'] ?? '').toString() == 'SAIR')
                   .length;
 
-              Map<String, dynamic>? fechamentoAtual;
-              for (final f in fechamentosDocs) {
-                if (f.id == competenciaEfetiva) {
-                  fechamentoAtual = f.data();
-                  break;
-                }
-              }
-              final isFechado = (fechamentoAtual?['status'] ?? '') == 'fechado';
+              final isMesAtual = competenciaEfetiva == _competenciaDeDateTime(DateTime.now());
 
               return ListView(
                 padding: const EdgeInsets.all(16),
@@ -1739,21 +1690,16 @@ class _AdminPageState extends State<AdminPage> {
                           ],
                         ),
                       ),
-                      const SizedBox(width: 10),
-                      FilledButton(
-                        onPressed: isFechado ? null : () => _fecharMes(context, competenciaEfetiva),
-                        child: Text(isFechado ? 'Mês fechado' : 'Fechar mês'),
-                      ),
                     ],
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    isFechado
-                        ? 'Status: FECHADO (histórico).'
-                        : 'Status: ABERTO (mês em andamento).',
+                    isMesAtual
+                        ? 'Recorte automático: do dia 1 até hoje.'
+                        : 'Recorte automático: mês completo.',
                     style: GoogleFonts.dmSans(
                       fontSize: 11,
-                      color: isFechado ? Colors.orangeAccent : _kGrayText.withValues(alpha: 0.8),
+                      color: _kGrayText.withValues(alpha: 0.8),
                     ),
                   ),
                   const SizedBox(height: 14),
@@ -1927,8 +1873,6 @@ class _AdminPageState extends State<AdminPage> {
                   else
                     _tabelaPontosPorProfissional(resumosProfissionais.take(200).toList()),
                 ],
-              );
-                },
               );
             },
           );
