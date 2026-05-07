@@ -45,6 +45,7 @@ jobs:
   deploy_firebase:
     name: Deploy to Firebase Hosting
     runs-on: ubuntu-latest
+    if: ${{ secrets.FIREBASE_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
 
