@@ -1,0 +1,19 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "pontos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "matricula",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

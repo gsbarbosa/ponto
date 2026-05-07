@@ -1,0 +1,5 @@
+Gigbag é um app que auxilia músicos, artistas e técnicos a organizar seus equipamentos na hora de sair para um evento ou show. Ele é uma agenda que marca seus eventos e quais equipamentos você deverá levar
+Depois de salvar no app quais equipamentos você possúi, você cria um evento e marca quais equipamentos irá levar.
+no dia do evento faz o briefing para recolher os equipamentos antes de sair. O app vai passar pela lista mostrando quais equipamentos você deverá levar, e você marca no app ao recolher cada equipamento.
+ao final de cada briefing, ele te mostra se você esqueceu algum equipamento.
+O usuario poderá repetir o processo reverso, ao fim do evento para recolher os equipamentos antes de ir embora e ter certeza de que não esqueceu nada.

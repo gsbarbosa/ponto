@@ -46,6 +46,3 @@ app.*.map.json
 
 # Firebase service account keys
 *-firebase-adminsdk-*.json
-
-# Windows
-Thumbs.db

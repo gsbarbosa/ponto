@@ -1,0 +1,19 @@
+Crie um aplicativo em flutter de forma mais simples possivel que irá:
+
+ter um botão de ENTRAR
+ao clicar no botão de ENTRAR, ele deve
+ * Enviar a data e hora para uma planilha do google
+ * ALterar o botão de ENTRAR para SAIR
+ao clicar no botão de SAIR, ele deve
+ * Enviar a data e hora para uma planilha do google
+ * ALterar o botão de SAIR para ENTRAR
+ 
+
+ Agora, vamos para as ultimas regras:
+
+* Ao virar o dia e o usuário não tiver clicado no botão de sair (apenas de entrar), no próximo ponto que ele bater, deve informar o ponto de saída com a descrição "Não informado"
+* Colocar um botão na tela principal com "Solicitar ajuste", esse botão deve ficar desabilitado, pois será uma função premium, ao clicar, deve exibir uma mensagem de função premium
+* Qual
+
+
+https://script.google.com/macros/s/AKfycbzrH2eAj6_WPmsu8KQOTpE5YU_vocHUXmAVaSNJfQt4_ordPYmKevesauGyrAWWyQ-q/exec
