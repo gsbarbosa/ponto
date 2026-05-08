@@ -6,10 +6,12 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:excel/excel.dart' as xls;
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'firebase_options.dart';
+import 'force_reload_stub.dart' if (dart.library.html) 'force_reload_web.dart';
 
 const _kBackground = Color(0xFF1e1e1e);
 const _kGrayBorder = Color(0xFF9e9e9e);
@@ -624,16 +626,6 @@ class _PontoPageState extends State<PontoPage> {
 
     try {
       await (() async {
-        // Se virou o dia e havia entrada sem saída, cria saída automática.
-        if (_ultimaData != null && _ultimaData != dataStr && _ultimoTipo == 'ENTRAR') {
-          await _savePonto(
-            tipo: 'SAIR',
-            data: _ultimaData!,
-            hora: 'Não informado',
-            timestamp: agora.subtract(const Duration(days: 1)),
-          );
-        }
-
         await _savePonto(
           tipo: tipo,
           data: dataStr,
@@ -684,10 +676,99 @@ class _PontoPageState extends State<PontoPage> {
     }).timeout(_firestoreTimeout);
   }
 
-  Future<void> _abrirDialogSolicitacaoCorrecao() async {
+  DateTime? _parseDataHoraPtBr(String data, String hora) {
+    try {
+      final parts = data.split('/');
+      if (parts.length != 3) return null;
+      final d = int.parse(parts[0]);
+      final m = int.parse(parts[1]);
+      final y = int.parse(parts[2]);
+
+      final hParts = hora.split(':');
+      if (hParts.length < 2) return null;
+      final hh = int.parse(hParts[0]);
+      final mm = int.parse(hParts[1]);
+      final ss = hParts.length >= 3 ? int.tryParse(hParts[2]) ?? 0 : 0;
+      return DateTime(y, m, d, hh, mm, ss);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _aplicarCorrecaoPonto({
+    required String tipo,
+    required String data,
+    required String hora,
+  }) async {
+    final dt = _parseDataHoraPtBr(data, hora);
+    if (dt == null) {
+      _showMessage('Informe data e hora válidas.', Colors.orange);
+      return;
+    }
+    if (tipo != 'ENTRAR' && tipo != 'SAIR') {
+      _showMessage('Tipo inválido.', Colors.orange);
+      return;
+    }
+
+    try {
+      final existentes = await FirebaseFirestore.instance
+          .collection('pontos')
+          .where('matricula', isEqualTo: widget.codigo)
+          .where('data', isEqualTo: data)
+          .where('tipo', isEqualTo: tipo)
+          .get()
+          .timeout(_firestoreTimeout);
+
+      if (existentes.docs.isNotEmpty) {
+        // Atualiza o registro existente (não cria um novo).
+        QueryDocumentSnapshot<Map<String, dynamic>> escolhido = existentes.docs.first;
+        if (existentes.docs.length > 1) {
+          // Critério determinístico: ENTRAR -> menor timestamp, SAIR -> maior timestamp.
+          DateTime best = tipo == 'ENTRAR'
+              ? DateTime.fromMillisecondsSinceEpoch(9999999999999)
+              : DateTime.fromMillisecondsSinceEpoch(0);
+          for (final doc in existentes.docs) {
+            final ts = doc.data()['timestamp'];
+            final dtt = ts is Timestamp ? ts.toDate() : null;
+            if (dtt == null) continue;
+            final melhor = tipo == 'ENTRAR' ? dtt.isBefore(best) : dtt.isAfter(best);
+            if (melhor) {
+              best = dtt;
+              escolhido = doc;
+            }
+          }
+        }
+
+        await FirebaseFirestore.instance
+            .collection('pontos')
+            .doc(escolhido.id)
+            .update({
+              'hora': hora,
+              'timestamp': Timestamp.fromDate(dt),
+              'updatedAt': FieldValue.serverTimestamp(),
+              'origem': 'ajuste_funcionario',
+            })
+            .timeout(_firestoreTimeout);
+      } else {
+        // Se não existir, cria (primeira vez daquele tipo/data).
+        await _savePonto(
+          tipo: tipo,
+          data: data,
+          hora: hora,
+          timestamp: dt,
+        );
+      }
+
+      await _carregarUltimoPonto();
+      _showMessage('Horário ajustado com sucesso.', Colors.green);
+    } catch (e) {
+      _showMessage('Falha ao ajustar horário: $e', Colors.red);
+    }
+  }
+
+  Future<void> _abrirDialogAjusteHorario() async {
     final dataController = TextEditingController(text: _ultimaData ?? '');
     final horaController = TextEditingController();
-    final justificativaController = TextEditingController();
     String tipo = _ultimoTipo == 'SAIR' ? 'SAIR' : 'ENTRAR';
 
     await showDialog<void>(
@@ -696,7 +777,7 @@ class _PontoPageState extends State<PontoPage> {
         return StatefulBuilder(
           builder: (context, setStateDialog) {
             return AlertDialog(
-              title: const Text('Solicitar correção de ponto'),
+              title: const Text('Ajustar horário'),
               content: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -720,15 +801,39 @@ class _PontoPageState extends State<PontoPage> {
                     const SizedBox(height: 12),
                     TextField(
                       controller: horaController,
-                      decoration: const InputDecoration(labelText: 'Hora (HH:mm:ss)'),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: justificativaController,
-                      minLines: 3,
-                      maxLines: 5,
+                      readOnly: true,
+                      onTap: () async {
+                        final baseDt = _parseDataHoraPtBr(
+                              dataController.text.trim(),
+                              horaController.text.trim(),
+                            ) ??
+                            DateTime.now();
+                        final initial = TimeOfDay.fromDateTime(baseDt);
+
+                        final picked = await showTimePicker(
+                          context: context,
+                          initialTime: initial,
+                          helpText: 'Selecione o horário',
+                          builder: (context, child) {
+                            final media = MediaQuery.of(context);
+                            return MediaQuery(
+                              data: media.copyWith(alwaysUse24HourFormat: true),
+                              child: child ?? const SizedBox.shrink(),
+                            );
+                          },
+                        );
+                        if (picked == null) return;
+                        final hh = picked.hour.toString().padLeft(2, '0');
+                        final mm = picked.minute.toString().padLeft(2, '0');
+                        setStateDialog(() {
+                          // padrão fixo HH:mm:ss
+                          horaController.text = '$hh:$mm:00';
+                        });
+                      },
                       decoration: const InputDecoration(
-                        labelText: 'Justificativa (obrigatória)',
+                        labelText: 'Hora',
+                        hintText: 'Toque para selecionar',
+                        suffixIcon: Icon(Icons.access_time),
                       ),
                     ),
                   ],
@@ -741,34 +846,13 @@ class _PontoPageState extends State<PontoPage> {
                 ),
                 FilledButton(
                   onPressed: () async {
-                    final justificativa = justificativaController.text.trim();
-                    if (justificativa.isEmpty) {
-                      _showMessage('A justificativa é obrigatória.', Colors.orange);
-                      return;
-                    }
-
-                    try {
-                      await FirebaseFirestore.instance.collection('solicitacoes_correcao').add({
-                        'nome': widget.nome,
-                        'matricula': widget.codigo,
-                        'status': 'pendente',
-                        'justificativa': justificativa,
-                        'tipoSolicitado': tipo,
-                        'dataSolicitada': dataController.text.trim(),
-                        'horaSolicitada': horaController.text.trim(),
-                        'ultimoTipoRegistrado': _ultimoTipo ?? '',
-                        'ultimaDataRegistrada': _ultimaData ?? '',
-                        'createdAt': FieldValue.serverTimestamp(),
-                      }).timeout(_firestoreTimeout);
-
-                      if (!mounted) return;
-                      Navigator.of(context).pop();
-                      _showMessage('Solicitação enviada para aprovação do admin.', Colors.green);
-                    } catch (e) {
-                      _showMessage('Falha ao enviar solicitação: $e', Colors.red);
-                    }
+                    final data = dataController.text.trim();
+                    final hora = horaController.text.trim();
+                    await _aplicarCorrecaoPonto(tipo: tipo, data: data, hora: hora);
+                    if (!mounted) return;
+                    Navigator.of(context).pop();
                   },
-                  child: const Text('Enviar solicitação'),
+                  child: const Text('Salvar ajuste'),
                 ),
               ],
             );
@@ -778,7 +862,6 @@ class _PontoPageState extends State<PontoPage> {
     );
     dataController.dispose();
     horaController.dispose();
-    justificativaController.dispose();
   }
 
   void _showMessage(String text, Color color) {
@@ -803,7 +886,11 @@ class _PontoPageState extends State<PontoPage> {
                 tooltip: 'Voltar ao painel',
                 onPressed: _carregando ? null : () => widget.onLogout(),
               )
-            : null,
+            : IconButton(
+                onPressed: _carregando ? null : forceReload,
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Atualizar',
+              ),
         automaticallyImplyLeading: !widget.apenasVolta,
         actions: [
           if (!widget.apenasVolta)
@@ -859,9 +946,9 @@ class _PontoPageState extends State<PontoPage> {
               child: SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
-                  onPressed: _carregando ? null : _abrirDialogSolicitacaoCorrecao,
+                  onPressed: _carregando ? null : _abrirDialogAjusteHorario,
                   icon: const Icon(Icons.edit_note),
-                  label: const Text('Solicitar correção de ponto'),
+                  label: const Text('Ajustar horário'),
                 ),
               ),
             ),
@@ -924,7 +1011,14 @@ class _ResumoPontoProfissional {
     if (d == null) return '—';
     final tipo = d['tipo'] ?? '';
     final data = d['data'] ?? '';
-    final hora = d['hora'] ?? '';
+    final horaRaw = (d['hora'] ?? '').toString().trim();
+    final ts = d['timestamp'];
+    final dt = ts is Timestamp ? ts.toDate() : null;
+    final hora = (horaRaw.isNotEmpty && horaRaw.toLowerCase() != 'não informado')
+        ? horaRaw
+        : (dt != null
+            ? '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}'
+            : horaRaw);
     return '$tipo · $data $hora'.trim();
   }
 }
@@ -953,6 +1047,24 @@ class _AdminPageState extends State<AdminPage> {
   String _filtroFuncionario = 'TODOS';
   String _filtroStatusSolicitacao = 'PENDENTE';
   String _competencia = '';
+
+  String _hhmmss(DateTime dt) {
+    return '${dt.hour.toString().padLeft(2, '0')}:'
+        '${dt.minute.toString().padLeft(2, '0')}:'
+        '${dt.second.toString().padLeft(2, '0')}';
+  }
+
+  /// Garante que a planilha/visões usem um horário real quando houver `timestamp`.
+  String _horaExibicao(Map<String, dynamic> d) {
+    final horaRaw = (d['hora'] ?? '').toString().trim();
+    if (horaRaw.isNotEmpty && horaRaw.toLowerCase() != 'não informado') {
+      return horaRaw;
+    }
+    final tsValue = d['timestamp'];
+    final dt = tsValue is Timestamp ? tsValue.toDate() : null;
+    if (dt == null) return horaRaw; // pode ser vazio ou "Não informado"
+    return _hhmmss(dt);
+  }
 
   @override
   void initState() {
@@ -1358,26 +1470,245 @@ class _AdminPageState extends State<AdminPage> {
   }
 
   void _mostrarDetalheProfissional(BuildContext context, _ResumoPontoProfissional r) {
-    final linhas = r.documentosRecentesPrimeiro.take(50).map((doc) {
+    final docs = r.documentosRecentesPrimeiro;
+
+    // Agrega por dia: primeira entrada e última saída.
+    final map = <String, Map<String, dynamic>>{};
+    for (final doc in docs) {
       final d = doc.data();
-      return '${d['tipo'] ?? ''} · ${d['data'] ?? ''} ${d['hora'] ?? ''}';
-    }).join('\n');
+      final tipo = (d['tipo'] ?? '').toString();
+      final data = (d['data'] ?? '').toString();
+      final hora = _horaExibicao(d);
+      final tsValue = d['timestamp'];
+      final dt = tsValue is Timestamp ? tsValue.toDate() : null;
+      if (data.trim().isEmpty) continue;
+
+      map.putIfAbsent(data, () {
+        return {
+          'data': data,
+          'entrada': '',
+          'saida': '',
+          '_entradaDt': null,
+          '_saidaDt': null,
+        };
+      });
+      final row = map[data]!;
+
+      if (tipo == 'ENTRAR') {
+        final current = row['_entradaDt'] as DateTime?;
+        if (current == null || (dt != null && dt.isBefore(current))) {
+          row['_entradaDt'] = dt ?? current;
+          row['entrada'] = hora;
+        }
+      } else if (tipo == 'SAIR') {
+        final current = row['_saidaDt'] as DateTime?;
+        if (current == null || (dt != null && dt.isAfter(current))) {
+          row['_saidaDt'] = dt ?? current;
+          row['saida'] = hora;
+        }
+      }
+    }
+
+    final rows = map.values.toList();
+    rows.sort((a, b) {
+      final aData = (a['data'] ?? '').toString();
+      final bData = (b['data'] ?? '').toString();
+      final aDt = _parseDataHoraPtBr(aData, '00:00:00') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bDt = _parseDataHoraPtBr(bData, '00:00:00') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return aDt.compareTo(bDt);
+    });
 
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text('${r.nome.isEmpty ? r.matricula : r.nome} (${r.matricula})'),
         content: SingleChildScrollView(
-          child: SelectableText(
-            linhas.isEmpty ? 'Sem registros.' : linhas,
-            style: GoogleFonts.dmSans(fontSize: 13, color: _kGrayText),
-          ),
+          child: rows.isEmpty
+              ? Text('Sem registros.', style: GoogleFonts.dmSans(fontSize: 13, color: _kGrayText))
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            'Data',
+                            style: GoogleFonts.dmSans(fontSize: 12, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            'Entrada',
+                            style: GoogleFonts.dmSans(fontSize: 12, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            'Saída',
+                            style: GoogleFonts.dmSans(fontSize: 12, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    ...rows.take(40).map((row) {
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              flex: 2,
+                              child: Text(
+                                (row['data'] ?? '').toString(),
+                                style: GoogleFonts.dmSans(fontSize: 13, color: _kGrayText),
+                              ),
+                            ),
+                            Expanded(
+                              flex: 2,
+                              child: Text(
+                                (row['entrada'] ?? '').toString(),
+                                style: GoogleFonts.dmSans(fontSize: 13, color: _kGrayText),
+                              ),
+                            ),
+                            Expanded(
+                              flex: 2,
+                              child: Text(
+                                (row['saida'] ?? '').toString(),
+                                style: GoogleFonts.dmSans(fontSize: 13, color: _kGrayText),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                  ],
+                ),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Fechar')),
         ],
       ),
     );
+  }
+
+  Future<void> _gerarPlanilhaCompleta(BuildContext context) async {
+    try {
+      final now = DateTime.now();
+      final competencia = '${now.year}-${now.month.toString().padLeft(2, '0')}';
+      final inicioMes = DateTime(now.year, now.month, 1);
+      final fimMesExclusivo = DateTime(now.year, now.month + 1, 1);
+
+      final query = await FirebaseFirestore.instance
+          .collection('pontos')
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(inicioMes))
+          .where('timestamp', isLessThan: Timestamp.fromDate(fimMesExclusivo))
+          .get()
+          .timeout(_firestoreTimeout);
+
+      // Agrega por (matricula|data): Data, Nome, Entrada (primeira), Saída (última)
+      final map = <String, Map<String, dynamic>>{};
+      for (final doc in query.docs) {
+        final d = doc.data();
+        final nome = (d['nome'] ?? '').toString().trim();
+        final matricula = (d['matricula'] ?? '').toString().trim();
+        final tipo = (d['tipo'] ?? '').toString().trim();
+        final data = (d['data'] ?? '').toString().trim();
+        final hora = _horaExibicao(d);
+        final tsValue = d['timestamp'];
+        final dt = tsValue is Timestamp ? tsValue.toDate() : null;
+        if (matricula.isEmpty || data.isEmpty) continue;
+
+        final key = '$matricula|$data';
+        map.putIfAbsent(key, () {
+          return {
+            'data': data,
+            'nome': nome,
+            'entrada': '',
+            'saida': '',
+            '_entradaDt': null,
+            '_saidaDt': null,
+          };
+        });
+        final row = map[key]!;
+        if (nome.isNotEmpty) row['nome'] = nome;
+
+        if (tipo == 'ENTRAR') {
+          final current = row['_entradaDt'] as DateTime?;
+          if (current == null || (dt != null && dt.isBefore(current))) {
+            row['_entradaDt'] = dt ?? current;
+            row['entrada'] = hora;
+          }
+        } else if (tipo == 'SAIR') {
+          final current = row['_saidaDt'] as DateTime?;
+          if (current == null || (dt != null && dt.isAfter(current))) {
+            row['_saidaDt'] = dt ?? current;
+            row['saida'] = hora;
+          }
+        }
+      }
+
+      final rows = map.values.toList();
+      rows.sort((a, b) {
+        final aData = (a['data'] ?? '').toString();
+        final bData = (b['data'] ?? '').toString();
+        final aNome = (a['nome'] ?? '').toString();
+        final bNome = (b['nome'] ?? '').toString();
+        final aDt = _parseDataHoraPtBr(aData, '00:00:00') ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final bDt = _parseDataHoraPtBr(bData, '00:00:00') ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final cmp = aDt.compareTo(bDt);
+        return cmp != 0 ? cmp : aNome.compareTo(bNome);
+      });
+
+      final excel = xls.Excel.createExcel();
+      final sheetName = competencia;
+      final sheet = excel[sheetName];
+
+      sheet.appendRow([
+        xls.TextCellValue('Data'),
+        xls.TextCellValue('Nome'),
+        xls.TextCellValue('Entrada'),
+        xls.TextCellValue('Saída'),
+      ]);
+
+      for (final r in rows) {
+        sheet.appendRow([
+          xls.TextCellValue((r['data'] ?? '').toString()),
+          xls.TextCellValue((r['nome'] ?? '').toString()),
+          xls.TextCellValue((r['entrada'] ?? '').toString()),
+          xls.TextCellValue((r['saida'] ?? '').toString()),
+        ]);
+      }
+
+      final bytes = excel.encode();
+      if (bytes == null) throw Exception('Falha ao gerar arquivo Excel.');
+
+      final params = ShareParams(
+        files: [
+          XFile.fromData(
+            Uint8List.fromList(bytes),
+            mimeType:
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            name: 'pontos_$competencia.xlsx',
+          ),
+        ],
+        text: 'Planilha mensal de pontos ($competencia)',
+        subject: 'Pontos $competencia',
+      );
+      await SharePlus.instance.share(params);
+
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Planilha do mês $competencia gerada com sucesso.')),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Falha ao gerar planilha: $e'), backgroundColor: Colors.red),
+      );
+    }
   }
 
   Future<void> _exportarCsv(BuildContext context, String nomeArquivo) async {
@@ -1557,6 +1888,11 @@ class _AdminPageState extends State<AdminPage> {
       backgroundColor: _kBackground,
       appBar: AppBar(
         title: const Text('Administrador'),
+        leading: IconButton(
+          onPressed: forceReload,
+          icon: const Icon(Icons.refresh),
+          tooltip: 'Atualizar',
+        ),
         actions: [
           IconButton(
             onPressed: _abrirMeuPonto,
@@ -1573,308 +1909,62 @@ class _AdminPageState extends State<AdminPage> {
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: _streamPontos(),
         builder: (context, pontosSnap) {
-          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: _streamSolicitacoes(),
-            builder: (context, solicitacoesSnap) {
-              if (pontosSnap.connectionState == ConnectionState.waiting ||
-                  solicitacoesSnap.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (pontosSnap.hasError) {
-                return Center(
-                  child: Text(
-                    'Erro ao carregar pontos: ${pontosSnap.error}',
-                    style: GoogleFonts.dmSans(color: Colors.red),
-                  ),
-                );
-              }
-              if (solicitacoesSnap.hasError) {
-                return Center(
-                  child: Text(
-                    'Erro ao carregar solicitações: ${solicitacoesSnap.error}',
-                    style: GoogleFonts.dmSans(color: Colors.red),
-                  ),
-                );
-              }
+          if (pontosSnap.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (pontosSnap.hasError) {
+            return Center(
+              child: Text(
+                'Erro ao carregar pontos: ${pontosSnap.error}',
+                style: GoogleFonts.dmSans(color: Colors.red),
+              ),
+            );
+          }
 
-              final pontosDocs = pontosSnap.data?.docs ?? [];
-              final solicitacoesDocs = solicitacoesSnap.data?.docs ?? [];
-              final pontosFiltrados = _filtrarPontos(pontosDocs);
-              final resumosProfissionais = _resumosPorProfissional(pontosFiltrados);
-              final solicitacoesFiltradas = _filtrarSolicitacoes(solicitacoesDocs);
+          final pontosDocs = pontosSnap.data?.docs ?? [];
+          final resumosProfissionais = _resumosPorProfissional(pontosDocs);
 
-              final funcionarios = <String>{};
-              for (final p in pontosDocs) {
-                final m = (p.data()['matricula'] ?? '').toString().trim();
-                if (m.isNotEmpty) funcionarios.add(m);
-              }
-              final funcionariosOrdenados = funcionarios.toList()..sort();
-
-              // Competências disponíveis a partir dos timestamps existentes.
-              final competenciasSet = <String>{};
-              for (final p in pontosDocs) {
-                final ts = p.data()['timestamp'];
-                final dt = ts is Timestamp ? ts.toDate() : null;
-                if (dt != null) competenciasSet.add(_competenciaDeDateTime(dt));
-              }
-              final competencias = competenciasSet.toList()..sort();
-              final competenciaAtual = _competenciaDeDateTime(DateTime.now());
-              final competenciaDefault = competencias.contains(competenciaAtual)
-                  ? competenciaAtual
-                  : (competencias.isNotEmpty ? competencias.last : competenciaAtual);
-              final competenciaEfetiva =
-                  competencias.contains(_competencia) ? _competencia : competenciaDefault;
-
-              final pendentes = solicitacoesDocs
-                  .where((d) => (d.data()['status'] ?? '').toString() == 'pendente')
-                  .length;
-              final totalEntradas = pontosDocs
-                  .where((d) => (d.data()['tipo'] ?? '').toString() == 'ENTRAR')
-                  .length;
-              final totalSaidas = pontosDocs
-                  .where((d) => (d.data()['tipo'] ?? '').toString() == 'SAIR')
-                  .length;
-
-              final isMesAtual = competenciaEfetiva == _competenciaDeDateTime(DateTime.now());
-
-              return ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  Text(
-                    '${widget.nome} (${widget.codigo})',
-                    style: GoogleFonts.dmSans(fontSize: 14, color: _kGrayText),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: FilledButton.icon(
-                          onPressed: () => _exportarCsv(
-                            context,
-                            'pontos_${competenciaEfetiva}_marcacoes.csv',
-                          ),
-                          icon: const Icon(Icons.table_chart),
-                          label: const Text('Exportar marcações'),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: FilledButton.icon(
-                          onPressed: () => _exportarCsvPorDia(
-                            context,
-                            'pontos_${competenciaEfetiva}_por_dia.csv',
-                          ),
-                          icon: const Icon(Icons.cloud_upload),
-                          label: const Text('Exportar por dia'),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: DropdownMenu<String>(
-                          initialSelection: competenciaEfetiva,
-                          label: const Text('Competência'),
-                          onSelected: (v) => setState(() {
-                            _competencia = v ?? competenciaDefault;
-                            _filtroPeriodo = 'MES';
-                          }),
-                          dropdownMenuEntries: [
-                            if (competencias.isEmpty)
-                              DropdownMenuEntry(value: competenciaEfetiva, label: competenciaEfetiva),
-                            ...competencias.reversed.map(
-                              (c) => DropdownMenuEntry(value: c, label: c),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    isMesAtual
-                        ? 'Recorte automático: do dia 1 até hoje.'
-                        : 'Recorte automático: mês completo.',
-                    style: GoogleFonts.dmSans(
-                      fontSize: 11,
-                      color: _kGrayText.withValues(alpha: 0.8),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  GridView.count(
-                    crossAxisCount: 2,
-                    childAspectRatio: 2.4,
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    mainAxisSpacing: 8,
-                    crossAxisSpacing: 8,
-                    children: [
-                      _kpiCard('Funcionários', '${funcionarios.length}'),
-                      _kpiCard('Pendências', '$pendentes', color: Colors.orangeAccent),
-                      _kpiCard('Entradas', '$totalEntradas', color: Colors.greenAccent),
-                      _kpiCard('Saídas', '$totalSaidas', color: Colors.lightBlueAccent),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _buscaController,
-                    onChanged: (v) => setState(() => _busca = v),
-                    decoration: const InputDecoration(
-                      prefixIcon: Icon(Icons.search),
-                      labelText: 'Buscar por nome, matrícula ou justificativa',
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      DropdownMenu<String>(
-                        initialSelection: _filtroTipo,
-                        label: const Text('Tipo'),
-                        onSelected: (v) => setState(() => _filtroTipo = v ?? 'TODOS'),
-                        dropdownMenuEntries: const [
-                          DropdownMenuEntry(value: 'TODOS', label: 'Todos'),
-                          DropdownMenuEntry(value: 'ENTRAR', label: 'Entradas'),
-                          DropdownMenuEntry(value: 'SAIR', label: 'Saídas'),
-                        ],
-                      ),
-                      DropdownMenu<String>(
-                        initialSelection: _filtroPeriodo,
-                        label: const Text('Período'),
-                        onSelected: (v) => setState(() => _filtroPeriodo = v ?? '30D'),
-                        dropdownMenuEntries: const [
-                          DropdownMenuEntry(value: 'HOJE', label: 'Hoje'),
-                          DropdownMenuEntry(value: '7D', label: '7 dias'),
-                          DropdownMenuEntry(value: '30D', label: '30 dias'),
-                          DropdownMenuEntry(value: 'MES', label: 'Competência'),
-                          DropdownMenuEntry(value: 'TODOS', label: 'Tudo'),
-                        ],
-                      ),
-                      DropdownMenu<String>(
-                        initialSelection: _filtroStatusSolicitacao,
-                        label: const Text('Solicitações'),
-                        onSelected: (v) =>
-                            setState(() => _filtroStatusSolicitacao = v ?? 'PENDENTE'),
-                        dropdownMenuEntries: const [
-                          DropdownMenuEntry(value: 'PENDENTE', label: 'Pendentes'),
-                          DropdownMenuEntry(value: 'APROVADA', label: 'Aprovadas'),
-                          DropdownMenuEntry(value: 'REJEITADA', label: 'Rejeitadas'),
-                          DropdownMenuEntry(value: 'TODOS', label: 'Todas'),
-                        ],
-                      ),
-                      DropdownMenu<String>(
-                        initialSelection: _filtroFuncionario,
-                        label: const Text('Funcionário'),
-                        onSelected: (v) => setState(() => _filtroFuncionario = v ?? 'TODOS'),
-                        dropdownMenuEntries: [
-                          const DropdownMenuEntry(value: 'TODOS', label: 'Todos'),
-                          ...funcionariosOrdenados.map(
-                            (m) => DropdownMenuEntry(value: m, label: m),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Solicitações (${solicitacoesFiltradas.length})',
-                    style: GoogleFonts.dmSans(fontSize: 16, fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 8),
-                  if (solicitacoesFiltradas.isEmpty)
-                    Text(
-                      'Nenhuma solicitação para os filtros atuais.',
-                      style: GoogleFonts.dmSans(color: _kGrayText),
-                    )
-                  else
-                    ...solicitacoesFiltradas.map((doc) {
-                      final d = doc.data();
-                      final status = (d['status'] ?? '').toString();
-                      final isPendente = status == 'pendente';
-                      return Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(10),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                '${d['nome'] ?? ''} (${d['matricula'] ?? ''})',
-                                style: GoogleFonts.dmSans(fontWeight: FontWeight.w700),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                'Status: ${status.toUpperCase()}',
-                                style: GoogleFonts.dmSans(
-                                  color: isPendente
-                                      ? Colors.orangeAccent
-                                      : (status == 'aprovada' ? Colors.green : Colors.redAccent),
-                                ),
-                              ),
-                              Text(
-                                'Solicitado: ${d['tipoSolicitado'] ?? '-'} '
-                                '${d['dataSolicitada'] ?? ''} ${d['horaSolicitada'] ?? ''}',
-                                style: GoogleFonts.dmSans(color: _kGrayText),
-                              ),
-                              Text(
-                                'Justificativa: ${d['justificativa'] ?? ''}',
-                                style: GoogleFonts.dmSans(color: _kGrayText),
-                              ),
-                              if (!isPendente && (d['motivoRejeicao'] ?? '').toString().isNotEmpty)
-                                Text(
-                                  'Motivo rejeição: ${d['motivoRejeicao']}',
-                                  style: GoogleFonts.dmSans(color: Colors.redAccent),
-                                ),
-                              if (isPendente)
-                                Row(
-                                  children: [
-                                    TextButton.icon(
-                                      onPressed: () => _aprovarSolicitacao(
-                                        context: context,
-                                        solicitacaoId: doc.id,
-                                      ),
-                                      icon: const Icon(Icons.check_circle, color: Colors.green),
-                                      label: const Text('Aprovar'),
-                                    ),
-                                    TextButton.icon(
-                                      onPressed: () => _rejeitarSolicitacao(
-                                        context: context,
-                                        solicitacaoId: doc.id,
-                                      ),
-                                      icon: const Icon(Icons.cancel, color: Colors.red),
-                                      label: const Text('Rejeitar'),
-                                    ),
-                                  ],
-                                ),
-                            ],
-                          ),
-                        ),
-                      );
-                    }),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Pontos por profissional (${resumosProfissionais.length}) — '
-                    '${pontosFiltrados.length} marcações no filtro',
-                    style: GoogleFonts.dmSans(fontSize: 16, fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Uma linha por profissional. Toque na linha para ver até 50 marcações.',
-                    style: GoogleFonts.dmSans(fontSize: 11, color: _kGrayText.withValues(alpha: 0.8)),
-                  ),
-                  const SizedBox(height: 8),
-                  if (resumosProfissionais.isEmpty)
-                    Text(
-                      'Nenhum registro para os filtros atuais.',
-                      style: GoogleFonts.dmSans(color: _kGrayText),
-                    )
-                  else
-                    _tabelaPontosPorProfissional(resumosProfissionais.take(200).toList()),
-                ],
-              );
-            },
+          return ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              Text(
+                '${widget.nome} (${widget.codigo})',
+                style: GoogleFonts.dmSans(fontSize: 14, color: _kGrayText),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => _gerarPlanilhaCompleta(context),
+                icon: const Icon(Icons.table_view),
+                label: const Text('Gerar planilha completa'),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                'Pontos por profissional (${resumosProfissionais.length})',
+                style: GoogleFonts.dmSans(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Uma linha por profissional. Toque na linha para ver até 50 marcações.',
+                style: GoogleFonts.dmSans(
+                  fontSize: 11,
+                  color: _kGrayText.withValues(alpha: 0.8),
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (resumosProfissionais.isEmpty)
+                Text(
+                  'Nenhum registro encontrado.',
+                  style: GoogleFonts.dmSans(color: _kGrayText),
+                )
+              else
+                _tabelaPontosPorProfissional(resumosProfissionais.take(200).toList()),
+              const SizedBox(height: 18),
+              OutlinedButton.icon(
+                onPressed: widget.onLogout,
+                icon: const Icon(Icons.logout),
+                label: const Text('Sair do app'),
+              ),
+            ],
           );
         },
       ),
