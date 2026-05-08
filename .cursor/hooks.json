@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": ".cursor/hooks/warn-nested-flutter.sh",
+        "matcher": "ponto_app|flutter create",
+        "timeout": 5
+      }
+    ]
+  }
+}

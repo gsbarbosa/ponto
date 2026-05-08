@@ -1,0 +1,32 @@
+---
+description: Fluxo Git esperado — commits pequenos, push, PR e verificação antes de entregar
+alwaysApply: true
+---
+
+# Git e entrega (fluxo do time)
+
+Quando houver mudanças de código, o agente deve **orientar ou executar** este fluxo (conforme o usuário pedir “commit”, “subir”, “publicar”):
+
+## Checklist rápido
+
+1. **`git status`** — conferir só arquivos relacionados à tarefa.
+2. **`git diff`** — revisar alterações reais (sem ruído de `.firebase/` cache se aparecer; respeitar `.gitignore`).
+3. **Commits pequenos e mensagens claras** — um tema por commit quando possível (ex.: `feat(admin): export mensal xlsx`, `fix: timeout Firestore`).
+4. **`git push`** — enviar a branch ao remoto (`origin`).
+5. **Pull Request** — para `main`, descrever o quê/por quê; mencionar se mudou Firebase Hosting ou regras.
+
+## Convenções de mensagem (sugerido)
+
+- `feat(escopo): …` nova funcionalidade  
+- `fix(escopo): …` correção  
+- `refactor(escopo): …` reorganização sem mudar comportamento  
+- `chore(escopo): …` tooling, CI, deps  
+
+## Após mudanças na raiz do Flutter
+
+Rodar na raiz do repo (ou avisar o usuário):
+
+- `fvm flutter pub get`
+- `fvm flutter analyze` ou `fvm flutter build web --release` antes de merge/deploy pesado.
+
+Para detalhes e checklist estendido, usar a skill do projeto **`ponto-git-workflow`** no Cursor.

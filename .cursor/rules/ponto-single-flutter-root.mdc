@@ -1,0 +1,31 @@
+---
+description: Um único app Flutter na raiz — proíbe projeto duplicado aninhado e CI fora da raiz
+alwaysApply: true
+---
+
+# Estrutura do repositório (obrigatório)
+
+## Regra de ouro
+
+- **Todo o código Dart do app fica na raiz**: `lib/`, `pubspec.yaml`, `android/`, `ios/`, `web/`, etc.
+- **Nunca** criar uma segunda árvore Flutter dentro de subpastas (`ponto_app/`, `app/`, `mobile/`, etc.) nem copiar o template inteiro do Flutter para dentro do repo.
+
+## Por quê
+
+Duplicar o projeto gera dois `main.dart`, dois `pubspec` e deploy que **não inclui** as mudanças da pasta errada. O GitHub só usa workflows em **`.github/workflows/` na raiz do repositório**, não em `alguma-pasta/.github/`.
+
+## Antes de criar arquivos
+
+1. Editar **`lib/`** e **`pubspec.yaml` na raiz**.
+2. Workflows: apenas **`.github/workflows/*.yml`** na raiz.
+3. Documentação extra: preferir **`docs/`**, não misturar outro produto na mesma raiz.
+
+## Anti-padrões (não fazer)
+
+```text
+❌ ponto_app/lib/main.dart     → usar lib/main.dart na raiz
+❌ ponto_app/.github/workflows → usar .github/workflows na raiz
+❌ Segundo pubspec.yaml abaixo da raiz do app (exceto se o projeto virar monorepo documentado)
+```
+
+Se o usuário pedir “novo app”, **estender o projeto na raiz**, não aninhar outro Flutter completo.

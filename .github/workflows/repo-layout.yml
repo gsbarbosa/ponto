@@ -1,0 +1,13 @@
+name: Repo layout guardrails
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  single-flutter-root:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verifica uma única raiz Flutter e sem ponto_app/
+        run: bash scripts/check-repo-layout.sh
