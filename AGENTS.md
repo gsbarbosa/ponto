@@ -19,3 +19,10 @@
 ## CI
 
 - `scripts/check-repo-layout.sh` roda no workflow **Repo layout guardrails**.
+
+## Esqueci minha senha (Cloud Function)
+
+- O app chama a callable **`resetPasswordByMatricula`** na região **`us-central1`** (ver `lib/main.dart` e `functions/index.js`).
+- **Publicar uma vez:** na raiz do repo, `cd functions && npm install && cd ..` e depois `firebase deploy --only functions --project ponto-444b1` (com conta/projeto corretos).
+- O projeto Firebase precisa estar no **plano Blaze (pagamento por uso)** para publicar Cloud Functions de 2ª geração; no Spark o deploy de `functions` é recusado.
+- Sem essa função publicada, o fluxo “Alterar senha” no login falha (função inexistente / indisponível).

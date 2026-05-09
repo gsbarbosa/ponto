@@ -1,0 +1,13 @@
+{
+  "name": "ponto-functions",
+  "description": "Cloud Functions para o app Ponto (reset de senha por matrícula)",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "index.js",
+  "private": true,
+  "dependencies": {
+    "firebase-admin": "^12.6.0",
+    "firebase-functions": "^5.1.1"
+  }
+}

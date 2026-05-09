@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -23,6 +24,8 @@ const _minutosEntreRegistros = 10;
 const _firestoreTimeout = Duration(seconds: 12);
 const _registroTimeout = Duration(seconds: 20);
 const _authTimeout = Duration(seconds: 12);
+/// Região da Cloud Function `resetPasswordByMatricula` (deve coincidir com `functions/index.js`).
+const _kFunctionsRegion = 'us-central1';
 
 const _kPrefsLogado = 'ponto_logado';
 const _kPrefsNome = 'ponto_nome';
@@ -334,55 +337,140 @@ class _LoginPageState extends State<LoginPage> {
     final matriculaController = TextEditingController(
       text: _codigoController.text.trim(),
     );
+    final novaSenhaController = TextEditingController();
+    final confirmarController = TextEditingController();
+
     await showDialog<void>(
       context: context,
       builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Recuperar senha'),
-          content: TextField(
-            controller: matriculaController,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: 'Matrícula',
-              helperText: 'Usaremos o email interno gerado pela matrícula.',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cancelar'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                final matricula = matriculaController.text.trim();
-                if (matricula.isEmpty) {
-                  _showMessage('Informe a matrícula.', Colors.orange);
-                  return;
+        var salvando = false;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            Future<void> salvar() async {
+              final matricula = matriculaController.text.trim();
+              final nova = novaSenhaController.text;
+              final conf = confirmarController.text;
+
+              if (matricula.isEmpty) {
+                _showMessage('Informe a matrícula.', Colors.orange);
+                return;
+              }
+              if (nova.length < 6) {
+                _showMessage('A nova senha deve ter no mínimo 6 caracteres.', Colors.orange);
+                return;
+              }
+              if (nova != conf) {
+                _showMessage('A confirmação da senha não confere.', Colors.orange);
+                return;
+              }
+
+              setDialogState(() => salvando = true);
+              try {
+                final callable = FirebaseFunctions.instanceFor(
+                  region: _kFunctionsRegion,
+                ).httpsCallable('resetPasswordByMatricula');
+                await callable
+                    .call<Map<String, dynamic>>({
+                      'matricula': matricula,
+                      'newPassword': nova,
+                    })
+                    .timeout(const Duration(seconds: 30));
+                if (!dialogContext.mounted) return;
+                Navigator.of(dialogContext).pop();
+                _showMessage('Senha alterada. Entre com a nova senha.', Colors.green);
+              } on FirebaseFunctionsException catch (e) {
+                final msg = (e.message ?? '').trim().isNotEmpty
+                    ? e.message!
+                    : _traduzErroFunctions(e.code);
+                _showMessage(msg, Colors.red);
+              } on TimeoutException {
+                _showMessage('Tempo excedido. Verifique a rede ou se a função foi publicada.', Colors.red);
+              } catch (e) {
+                _showMessage('Falha: $e', Colors.red);
+              } finally {
+                if (dialogContext.mounted) {
+                  setDialogState(() => salvando = false);
                 }
-                final email = _emailFuncionario(matricula);
-                try {
-                  await FirebaseAuth.instance
-                      .sendPasswordResetEmail(email: email)
-                      .timeout(_authTimeout);
-                  if (!dialogContext.mounted) return;
-                  Navigator.of(dialogContext).pop();
-                  _showMessage(
-                    'Se a conta existir, o email de recuperação foi enviado.',
-                    Colors.green,
-                  );
-                } on FirebaseAuthException catch (e) {
-                  _showMessage(_traduzErroAuth(e), Colors.red);
-                } on TimeoutException {
-                  _showMessage('Tempo excedido ao solicitar recuperação.', Colors.red);
-                }
-              },
-              child: const Text('Enviar recuperação'),
-            ),
-          ],
+              }
+            }
+
+            return AlertDialog(
+              title: const Text('Esqueci minha senha'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'Informe a matrícula e a nova senha. Modo simples: quem souber a matrícula pode alterar.',
+                      style: GoogleFonts.dmSans(fontSize: 12, color: _kGrayText),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: matriculaController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Matrícula',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: novaSenhaController,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Nova senha',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: confirmarController,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Confirmar nova senha',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: salvando ? null : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancelar'),
+                ),
+                FilledButton(
+                  onPressed: salvando ? null : salvar,
+                  child: salvando
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Alterar senha'),
+                ),
+              ],
+            );
+          },
         );
       },
     );
     matriculaController.dispose();
+    novaSenhaController.dispose();
+    confirmarController.dispose();
+  }
+
+  String _traduzErroFunctions(String code) {
+    switch (code) {
+      case 'invalid-argument':
+        return 'Dados inválidos.';
+      case 'not-found':
+        return 'Conta não encontrada para esta matrícula.';
+      case 'permission-denied':
+        return 'Sem permissão para redefinir. Publique a Cloud Function no Firebase.';
+      case 'unavailable':
+        return 'Serviço indisponível. Tente em instantes.';
+      default:
+        return 'Não foi possível alterar a senha ($code).';
+    }
   }
 
   String _traduzErroAuth(FirebaseAuthException e) {
