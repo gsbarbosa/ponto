@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -24,8 +23,6 @@ const _minutosEntreRegistros = 10;
 const _firestoreTimeout = Duration(seconds: 12);
 const _registroTimeout = Duration(seconds: 20);
 const _authTimeout = Duration(seconds: 12);
-/// Região da Cloud Function `resetPasswordByMatricula` (deve coincidir com `functions/index.js`).
-const _kFunctionsRegion = 'us-central1';
 
 const _kPrefsLogado = 'ponto_logado';
 const _kPrefsNome = 'ponto_nome';
@@ -337,140 +334,55 @@ class _LoginPageState extends State<LoginPage> {
     final matriculaController = TextEditingController(
       text: _codigoController.text.trim(),
     );
-    final novaSenhaController = TextEditingController();
-    final confirmarController = TextEditingController();
-
     await showDialog<void>(
       context: context,
       builder: (dialogContext) {
-        var salvando = false;
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            Future<void> salvar() async {
-              final matricula = matriculaController.text.trim();
-              final nova = novaSenhaController.text;
-              final conf = confirmarController.text;
-
-              if (matricula.isEmpty) {
-                _showMessage('Informe a matrícula.', Colors.orange);
-                return;
-              }
-              if (nova.length < 6) {
-                _showMessage('A nova senha deve ter no mínimo 6 caracteres.', Colors.orange);
-                return;
-              }
-              if (nova != conf) {
-                _showMessage('A confirmação da senha não confere.', Colors.orange);
-                return;
-              }
-
-              setDialogState(() => salvando = true);
-              try {
-                final callable = FirebaseFunctions.instanceFor(
-                  region: _kFunctionsRegion,
-                ).httpsCallable('resetPasswordByMatricula');
-                await callable
-                    .call<Map<String, dynamic>>({
-                      'matricula': matricula,
-                      'newPassword': nova,
-                    })
-                    .timeout(const Duration(seconds: 30));
-                if (!dialogContext.mounted) return;
-                Navigator.of(dialogContext).pop();
-                _showMessage('Senha alterada. Entre com a nova senha.', Colors.green);
-              } on FirebaseFunctionsException catch (e) {
-                final msg = (e.message ?? '').trim().isNotEmpty
-                    ? e.message!
-                    : _traduzErroFunctions(e.code);
-                _showMessage(msg, Colors.red);
-              } on TimeoutException {
-                _showMessage('Tempo excedido. Verifique a rede ou se a função foi publicada.', Colors.red);
-              } catch (e) {
-                _showMessage('Falha: $e', Colors.red);
-              } finally {
-                if (dialogContext.mounted) {
-                  setDialogState(() => salvando = false);
+        return AlertDialog(
+          title: const Text('Recuperar senha'),
+          content: TextField(
+            controller: matriculaController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Matrícula',
+              helperText: 'Usaremos o email interno gerado pela matrícula.',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final matricula = matriculaController.text.trim();
+                if (matricula.isEmpty) {
+                  _showMessage('Informe a matrícula.', Colors.orange);
+                  return;
                 }
-              }
-            }
-
-            return AlertDialog(
-              title: const Text('Esqueci minha senha'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      'Informe a matrícula e a nova senha. Modo simples: quem souber a matrícula pode alterar.',
-                      style: GoogleFonts.dmSans(fontSize: 12, color: _kGrayText),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: matriculaController,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                        labelText: 'Matrícula',
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: novaSenhaController,
-                      obscureText: true,
-                      decoration: const InputDecoration(
-                        labelText: 'Nova senha',
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: confirmarController,
-                      obscureText: true,
-                      decoration: const InputDecoration(
-                        labelText: 'Confirmar nova senha',
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: salvando ? null : () => Navigator.of(dialogContext).pop(),
-                  child: const Text('Cancelar'),
-                ),
-                FilledButton(
-                  onPressed: salvando ? null : salvar,
-                  child: salvando
-                      ? const SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Alterar senha'),
-                ),
-              ],
-            );
-          },
+                final email = _emailFuncionario(matricula);
+                try {
+                  await FirebaseAuth.instance
+                      .sendPasswordResetEmail(email: email)
+                      .timeout(_authTimeout);
+                  if (!dialogContext.mounted) return;
+                  Navigator.of(dialogContext).pop();
+                  _showMessage(
+                    'Se a conta existir, o email de recuperação foi enviado.',
+                    Colors.green,
+                  );
+                } on FirebaseAuthException catch (e) {
+                  _showMessage(_traduzErroAuth(e), Colors.red);
+                } on TimeoutException {
+                  _showMessage('Tempo excedido ao solicitar recuperação.', Colors.red);
+                }
+              },
+              child: const Text('Enviar recuperação'),
+            ),
+          ],
         );
       },
     );
     matriculaController.dispose();
-    novaSenhaController.dispose();
-    confirmarController.dispose();
-  }
-
-  String _traduzErroFunctions(String code) {
-    switch (code) {
-      case 'invalid-argument':
-        return 'Dados inválidos.';
-      case 'not-found':
-        return 'Conta não encontrada para esta matrícula.';
-      case 'permission-denied':
-        return 'Sem permissão para redefinir. Publique a Cloud Function no Firebase.';
-      case 'unavailable':
-        return 'Serviço indisponível. Tente em instantes.';
-      default:
-        return 'Não foi possível alterar a senha ($code).';
-    }
   }
 
   String _traduzErroAuth(FirebaseAuthException e) {
@@ -1682,12 +1594,119 @@ class _AdminPageState extends State<AdminPage> {
     );
   }
 
-  Future<void> _gerarPlanilhaCompleta(BuildContext context) async {
+  static const _mesesPt = <String>[
+    'Janeiro',
+    'Fevereiro',
+    'Março',
+    'Abril',
+    'Maio',
+    'Junho',
+    'Julho',
+    'Agosto',
+    'Setembro',
+    'Outubro',
+    'Novembro',
+    'Dezembro',
+  ];
+
+  /// Retorna competência `yyyy-MM` ou null se cancelado.
+  Future<String?> _solicitarCompetenciaPlanilha(BuildContext context) async {
+    final now = DateTime.now();
+    var ano = now.year;
+    var mes = now.month;
+    final anoMin = now.year - 5;
+    final anoMax = now.year + 1;
+
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setLocal) {
+            return AlertDialog(
+              title: Text(
+                'Competência da planilha',
+                style: GoogleFonts.dmSans(fontWeight: FontWeight.w700),
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Selecione o mês e o ano para exportar todos os pontos desse período.',
+                    style: GoogleFonts.dmSans(fontSize: 13, color: _kGrayText),
+                  ),
+                  const SizedBox(height: 16),
+                  InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Mês',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<int>(
+                        isExpanded: true,
+                        value: mes,
+                        items: List.generate(
+                          12,
+                          (i) => DropdownMenuItem(
+                            value: i + 1,
+                            child: Text(_mesesPt[i]),
+                          ),
+                        ),
+                        onChanged: (v) {
+                          if (v != null) setLocal(() => mes = v);
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Ano',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<int>(
+                        isExpanded: true,
+                        value: ano,
+                        items: [
+                          for (var y = anoMin; y <= anoMax; y++)
+                            DropdownMenuItem(value: y, child: Text('$y')),
+                        ],
+                        onChanged: (v) {
+                          if (v != null) setLocal(() => ano = v);
+                        },
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Cancelar'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final c =
+                        '${ano.toString().padLeft(4, '0')}-${mes.toString().padLeft(2, '0')}';
+                    Navigator.of(ctx).pop(c);
+                  },
+                  child: const Text('Gerar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _gerarPlanilhaCompleta(BuildContext context, String competencia) async {
     try {
-      final now = DateTime.now();
-      final competencia = '${now.year}-${now.month.toString().padLeft(2, '0')}';
-      final inicioMes = DateTime(now.year, now.month, 1);
-      final fimMesExclusivo = DateTime(now.year, now.month + 1, 1);
+      final inicioMes = _inicioCompetencia(competencia);
+      final fimMesExclusivo = _fimCompetenciaExclusivo(competencia);
 
       final query = await FirebaseFirestore.instance
           .collection('pontos')
@@ -2021,7 +2040,11 @@ class _AdminPageState extends State<AdminPage> {
               ),
               const SizedBox(height: 12),
               FilledButton.icon(
-                onPressed: () => _gerarPlanilhaCompleta(context),
+                onPressed: () async {
+                  final comp = await _solicitarCompetenciaPlanilha(context);
+                  if (comp == null || !context.mounted) return;
+                  await _gerarPlanilhaCompleta(context, comp);
+                },
                 icon: const Icon(Icons.table_view),
                 label: const Text('Gerar planilha completa'),
               ),
